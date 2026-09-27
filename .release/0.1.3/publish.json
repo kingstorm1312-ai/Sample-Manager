@@ -1,0 +1,9 @@
+{
+  "version": "0.1.3",
+  "assetName": "Sample.Manager-0.1.3-final.zip",
+  "sha256": "867ed09e60c15ec45c0f9e4b3b089a40937ab4945b9c0ef6c979cee84de04df3",
+  "downloadUrl": "https://github.com/kingstorm1312-ai/Sample-Manager/releases/download/v0.1.3/Sample.Manager-0.1.3-final.zip",
+  "sourceUrlB64": "aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL2tpbmdzdG9ybTEzMTItYWkvU2FtcGxlLU1hbmFnZXIvbWFpbi8ucmVsZWFzZS8wLjEuMy9TYW1wbGUuTWFuYWdlci0wLjEuMy1maW5hbC56aXA=",
+  "notes": "Thêm nút kiểm tra cập nhật và hiển thị phiên bản.",
+  "retry": 3
+}

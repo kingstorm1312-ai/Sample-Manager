@@ -413,12 +413,41 @@ namespace SampleManager
 
         internal static void Start(Form owner)
         {
+            RunCheck(owner, null, null);
+        }
+
+        internal static void CheckNow(
+            Form owner,
+            Action<string> reportStatus,
+            Action completed)
+        {
             if (owner == null || owner.IsDisposed)
             {
                 return;
             }
 
-            if (Interlocked.Exchange(ref checkInProgress, 1) != 0)
+            if (Interlocked.CompareExchange(ref checkInProgress, 1, 0) != 0)
+            {
+                ReportStatus(owner, reportStatus, "Đang kiểm tra cập nhật");
+                ReportCompleted(owner, completed);
+                return;
+            }
+
+            RunCheck(owner, reportStatus, completed, true);
+        }
+
+        private static void RunCheck(
+            Form owner,
+            Action<string> reportStatus,
+            Action onCompleted,
+            bool alreadyStarted = false)
+        {
+            if (owner == null || owner.IsDisposed)
+            {
+                return;
+            }
+
+            if (!alreadyStarted && Interlocked.CompareExchange(ref checkInProgress, 1, 0) != 0)
             {
                 return;
             }
@@ -427,36 +456,68 @@ namespace SampleManager
             Task.Factory.StartNew<UpdateCheckResult>(
                 delegate { return service.CheckForUpdate(); })
                 .ContinueWith(
-                    delegate(Task<UpdateCheckResult> completed)
+                    delegate(Task<UpdateCheckResult> task)
                     {
+                        bool updateStarted = false;
                         try
                         {
-                            if (completed.IsCanceled || completed.IsFaulted || completed.Result == null)
+                            if (task.IsCanceled || task.IsFaulted || task.Result == null)
                             {
+                                ReportStatus(owner, reportStatus, "Không thể kiểm tra cập nhật");
                                 return;
                             }
 
-                            UpdateCheckResult result = completed.Result;
+                            UpdateCheckResult result = task.Result;
                             if (!result.IsUpdateAvailable)
                             {
+                                ReportStatus(owner, reportStatus, "Đã là bản mới nhất");
                                 return;
                             }
 
+                            ReportStatus(owner, reportStatus, "Đang tải cập nhật");
                             DownloadedUpdatePackage package = service.DownloadAndVerify(result.Manifest);
                             service.LaunchUpdater(package);
-                            PostToUi(owner, delegate { Application.Exit(); });
+                            updateStarted = true;
+                            PostToUi(owner, delegate
+                            {
+                                ReportCompleted(owner, onCompleted);
+                                Application.Exit();
+                            });
                         }
                         catch
                         {
-                            // Startup updates must never block the current app when the network,
-                            // package, updater, or handoff is unavailable.
+                            ReportStatus(owner, reportStatus, "Cập nhật thất bại");
                         }
                         finally
                         {
+                            if (!updateStarted)
+                            {
+                                ReportCompleted(owner, onCompleted);
+                            }
                             Interlocked.Exchange(ref checkInProgress, 0);
                         }
                     },
                     TaskScheduler.Default);
+        }
+
+        private static void ReportStatus(Form owner, Action<string> reportStatus, string status)
+        {
+            if (reportStatus == null)
+            {
+                return;
+            }
+
+            PostToUi(owner, delegate { reportStatus(status); });
+        }
+
+        private static void ReportCompleted(Form owner, Action completed)
+        {
+            if (completed == null)
+            {
+                return;
+            }
+
+            PostToUi(owner, delegate { completed(); });
         }
 
         private static void PostToUi(Form owner, MethodInvoker action)

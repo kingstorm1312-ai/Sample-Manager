@@ -10,7 +10,9 @@ namespace SampleManager
         private readonly Button requestButton;
         private readonly Button sampleManagementButton;
         private readonly Button logoutButton;
+        private readonly Button checkUpdatesButton;
         private readonly Label errorLabel;
+        private readonly Label versionLabel;
         private readonly GoogleSheetsSampleRepository repository;
         private readonly SampleManagerCache cache;
         private readonly AuthenticationService authenticationService;
@@ -42,6 +44,14 @@ namespace SampleManager
             title.ForeColor = AppTheme.Text;
             shell.Controls.Add(title);
 
+            checkUpdatesButton = new Button();
+            checkUpdatesButton.Text = "Kiểm tra cập nhật";
+            checkUpdatesButton.Location = new Point(482, 32);
+            checkUpdatesButton.Size = new Size(152, 38);
+            AppTheme.StyleSecondaryButton(checkUpdatesButton);
+            checkUpdatesButton.Click += CheckForUpdates;
+            shell.Controls.Add(checkUpdatesButton);
+
             logoutButton = new Button();
             logoutButton.Text = "Đăng xuất";
             logoutButton.Location = new Point(650, 32);
@@ -64,6 +74,18 @@ namespace SampleManager
             errorLabel.Location = new Point(32, 370);
             AppTheme.SetMutedStatus(errorLabel, "Đang tải dữ liệu");
             shell.Controls.Add(errorLabel);
+
+            versionLabel = new Label();
+            versionLabel.Text = "v" + Application.ProductVersion;
+            versionLabel.AutoSize = true;
+            versionLabel.Font = AppTheme.SmallFont;
+            versionLabel.ForeColor = AppTheme.Muted;
+            versionLabel.BackColor = Color.Transparent;
+            versionLabel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+            versionLabel.Location = new Point(
+                shell.ClientSize.Width - versionLabel.PreferredWidth - 32,
+                shell.ClientSize.Height - versionLabel.PreferredHeight - 20);
+            shell.Controls.Add(versionLabel);
 
             AcceptButton = requestButton;
             Shown += delegate { requestButton.Focus(); };
@@ -120,6 +142,16 @@ namespace SampleManager
                 {
                 }
             });
+        }
+
+        private void CheckForUpdates(object sender, EventArgs e)
+        {
+            checkUpdatesButton.Enabled = false;
+            AppTheme.SetMutedStatus(errorLabel, "Đang kiểm tra cập nhật");
+            UpdateCoordinator.CheckNow(
+                this,
+                delegate(string status) { AppTheme.SetMutedStatus(errorLabel, status); },
+                delegate { checkUpdatesButton.Enabled = true; });
         }
 
         private static Button CreateModuleButton(string text, int x, int y)
