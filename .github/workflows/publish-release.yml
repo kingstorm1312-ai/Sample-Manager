@@ -1,0 +1,56 @@
+name: Publish staged release
+
+on:
+  push:
+    paths:
+      - '.release/**/publish.json'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release request
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST="$(find .release -type f -name publish.json | sort | tail -n 1)"
+          test -n "$REQUEST"
+          VERSION="$(python - "$REQUEST" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    print(json.load(f)['version'])
+PY
+)"
+          DIR="$(dirname "$REQUEST")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          DIR: ${{ steps.meta.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          ZIP="$(find "$DIR" -maxdepth 1 -type f -name '*.zip' | sort | tail -n 1)"
+          MANIFEST="$DIR/update.json"
+          test -f "$ZIP"
+          test -f "$MANIFEST"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" "$MANIFEST" --clobber
+          else
+            gh release create "$TAG" "$ZIP" "$MANIFEST" \
+              --target "$GITHUB_SHA" \
+              --title "Sample Manager $VERSION" \
+              --notes "Sample Manager $VERSION"
+          fi
