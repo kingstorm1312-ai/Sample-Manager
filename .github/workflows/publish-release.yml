@@ -22,35 +22,79 @@ jobs:
           set -euo pipefail
           REQUEST="$(find .release -type f -name publish.json | sort | tail -n 1)"
           test -n "$REQUEST"
-          VERSION="$(python - "$REQUEST" <<'PY'
+          python - "$REQUEST" "$GITHUB_OUTPUT" <<'PY'
 import json, sys
-with open(sys.argv[1], encoding='utf-8') as f:
-    print(json.load(f)['version'])
+req_path, out_path = sys.argv[1], sys.argv[2]
+with open(req_path, encoding='utf-8') as f:
+    d = json.load(f)
+required = ['version','assetName','sourceUrl','sha256','downloadUrl']
+missing = [k for k in required if not d.get(k)]
+if missing:
+    raise SystemExit('Missing fields: ' + ', '.join(missing))
+with open(out_path, 'a', encoding='utf-8') as out:
+    for key in required:
+        out.write(f"{key}={d[key]}\n")
+    out.write(f"notes={d.get('notes','Sample Manager ' + d['version'])}\n")
 PY
-)"
-          DIR="$(dirname "$REQUEST")"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Download and verify package
+        id: package
+        env:
+          SOURCE_URL: ${{ steps.meta.outputs.sourceUrl }}
+          ASSET_NAME: ${{ steps.meta.outputs.assetName }}
+          EXPECTED_SHA: ${{ steps.meta.outputs.sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/$ASSET_NAME"
+          curl --fail --location --retry 3 --output "$ZIP" "$SOURCE_URL"
+          ACTUAL_SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Generate manifest
+        id: manifest
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          DOWNLOAD_URL: ${{ steps.meta.outputs.downloadUrl }}
+          SHA256: ${{ steps.meta.outputs.sha256 }}
+          NOTES: ${{ steps.meta.outputs.notes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="$RUNNER_TEMP/update.json"
+          python - "$MANIFEST" <<'PY'
+import json, os, sys
+out = sys.argv[1]
+data = {
+    'version': os.environ['VERSION'],
+    'downloadUrl': os.environ['DOWNLOAD_URL'],
+    'sha256': os.environ['SHA256'],
+    'mandatory': False,
+    'notes': os.environ.get('NOTES','')
+}
+with open(out, 'w', encoding='utf-8') as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+    f.write('\n')
+PY
+          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release and upload assets
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.meta.outputs.version }}
-          DIR: ${{ steps.meta.outputs.dir }}
+          NOTES: ${{ steps.meta.outputs.notes }}
+          ZIP: ${{ steps.package.outputs.zip }}
+          MANIFEST: ${{ steps.manifest.outputs.manifest }}
         shell: bash
         run: |
           set -euo pipefail
           TAG="v$VERSION"
-          ZIP="$(find "$DIR" -maxdepth 1 -type f -name '*.zip' | sort | tail -n 1)"
-          MANIFEST="$DIR/update.json"
-          test -f "$ZIP"
-          test -f "$MANIFEST"
-
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ZIP" "$MANIFEST" --clobber
           else
             gh release create "$TAG" "$ZIP" "$MANIFEST" \
               --target "$GITHUB_SHA" \
               --title "Sample Manager $VERSION" \
-              --notes "Sample Manager $VERSION"
+              --notes "$NOTES"
           fi
