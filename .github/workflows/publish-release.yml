@@ -26,6 +26,7 @@ jobs:
           ASSET_NAME="$(jq -r '.assetName' "$REQUEST")"
           SHA256="$(jq -r '.sha256' "$REQUEST")"
           DOWNLOAD_URL="$(jq -r '.downloadUrl' "$REQUEST")"
+          SOURCE_URL="$(jq -r '.sourceUrl // empty' "$REQUEST")"
           NOTES="$(jq -r '.notes // ("Sample Manager " + .version)' "$REQUEST")"
           DIR="$(dirname "$REQUEST")"
           test -n "$VERSION"
@@ -37,21 +38,27 @@ jobs:
             echo "assetName=$ASSET_NAME"
             echo "sha256=$SHA256"
             echo "downloadUrl=$DOWNLOAD_URL"
+            echo "sourceUrl=$SOURCE_URL"
             echo "notes=$NOTES"
             echo "dir=$DIR"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Rebuild and verify package
+      - name: Fetch and verify package
         id: package
         env:
           ASSET_NAME: ${{ steps.meta.outputs.assetName }}
           EXPECTED_SHA: ${{ steps.meta.outputs.sha256 }}
+          SOURCE_URL: ${{ steps.meta.outputs.sourceUrl }}
           DIR: ${{ steps.meta.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
           ZIP="$RUNNER_TEMP/$ASSET_NAME"
-          cat "$DIR"/chunks/*.b64 | tr -d '\r\n ' | base64 --decode > "$ZIP"
+          if [ -n "$SOURCE_URL" ]; then
+            curl --fail --location --silent --show-error "$SOURCE_URL" --output "$ZIP"
+          else
+            cat "$DIR"/chunks/*.b64 | tr -d '\r\n ' | base64 --decode > "$ZIP"
+          fi
           ACTUAL_SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
           test "$ACTUAL_SHA" = "$EXPECTED_SHA"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
