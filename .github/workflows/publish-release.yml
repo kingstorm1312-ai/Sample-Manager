@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Resolve release request
         id: meta
@@ -23,11 +25,11 @@ jobs:
           REQUEST="$(find .release -type f -name publish.json | sort | tail -n 1)"
           test -n "$REQUEST"
           python - "$REQUEST" "$GITHUB_OUTPUT" <<'PY'
-import json, sys
+import json, os, sys
 req_path, out_path = sys.argv[1], sys.argv[2]
 with open(req_path, encoding='utf-8') as f:
     d = json.load(f)
-required = ['version','assetName','sourceUrl','sha256','downloadUrl']
+required = ['version','assetName','sha256','downloadUrl']
 missing = [k for k in required if not d.get(k)]
 if missing:
     raise SystemExit('Missing fields: ' + ', '.join(missing))
@@ -35,19 +37,20 @@ with open(out_path, 'a', encoding='utf-8') as out:
     for key in required:
         out.write(f"{key}={d[key]}\n")
     out.write(f"notes={d.get('notes','Sample Manager ' + d['version'])}\n")
+    out.write(f"dir={os.path.dirname(req_path)}\n")
 PY
 
-      - name: Download and verify package
+      - name: Rebuild and verify package
         id: package
         env:
-          SOURCE_URL: ${{ steps.meta.outputs.sourceUrl }}
           ASSET_NAME: ${{ steps.meta.outputs.assetName }}
           EXPECTED_SHA: ${{ steps.meta.outputs.sha256 }}
+          DIR: ${{ steps.meta.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
           ZIP="$RUNNER_TEMP/$ASSET_NAME"
-          curl --fail --location --retry 3 --output "$ZIP" "$SOURCE_URL"
+          cat "$DIR"/chunks/*.b64 | base64 --decode > "$ZIP"
           ACTUAL_SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
           test "$ACTUAL_SHA" = "$EXPECTED_SHA"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
@@ -98,3 +101,15 @@ PY
               --title "Sample Manager $VERSION" \
               --notes "$NOTES"
           fi
+
+      - name: Remove transient staging
+        env:
+          DIR: ${{ steps.meta.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -r "$DIR"
+          git commit -m "chore: clear release staging"
+          git push origin HEAD:main
