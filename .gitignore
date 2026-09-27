@@ -1,0 +1,39 @@
+# Visual Studio / .NET
+.vs/
+**/bin/
+**/obj/
+**/packages/
+TestResults/
+artifacts/
+publish/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.cache
+*.log
+
+# Local auth / secrets — NEVER COMMIT
+.secrets/
+**/.secrets/
+token.json
+**/token.json
+tokens/
+**/tokens/
+credentials.json
+**/credentials.json
+client_secret*.json
+*.pfx
+*.p12
+*.key
+
+# Local machine / OS
+Thumbs.db
+Desktop.ini
+.idea/
+
+# Temporary / release staging
+*.tmp
+*.bak
+*.old
+release-staging/
