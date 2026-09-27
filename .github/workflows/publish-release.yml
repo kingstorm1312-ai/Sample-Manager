@@ -26,7 +26,7 @@ jobs:
           ASSET_NAME="$(jq -r '.assetName' "$REQUEST")"
           SHA256="$(jq -r '.sha256' "$REQUEST")"
           DOWNLOAD_URL="$(jq -r '.downloadUrl' "$REQUEST")"
-          SOURCE_URL="$(jq -r '.sourceUrl // empty' "$REQUEST")"
+          SOURCE_URL_B64="$(jq -r '.sourceUrlB64 // empty' "$REQUEST")"
           NOTES="$(jq -r '.notes // ("Sample Manager " + .version)' "$REQUEST")"
           DIR="$(dirname "$REQUEST")"
           test -n "$VERSION"
@@ -38,7 +38,7 @@ jobs:
             echo "assetName=$ASSET_NAME"
             echo "sha256=$SHA256"
             echo "downloadUrl=$DOWNLOAD_URL"
-            echo "sourceUrl=$SOURCE_URL"
+            echo "sourceUrlB64=$SOURCE_URL_B64"
             echo "notes=$NOTES"
             echo "dir=$DIR"
           } >> "$GITHUB_OUTPUT"
@@ -48,13 +48,14 @@ jobs:
         env:
           ASSET_NAME: ${{ steps.meta.outputs.assetName }}
           EXPECTED_SHA: ${{ steps.meta.outputs.sha256 }}
-          SOURCE_URL: ${{ steps.meta.outputs.sourceUrl }}
+          SOURCE_URL_B64: ${{ steps.meta.outputs.sourceUrlB64 }}
           DIR: ${{ steps.meta.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
           ZIP="$RUNNER_TEMP/$ASSET_NAME"
-          if [ -n "$SOURCE_URL" ]; then
+          if [ -n "$SOURCE_URL_B64" ]; then
+            SOURCE_URL="$(printf '%s' "$SOURCE_URL_B64" | base64 --decode)"
             curl --fail --location --silent --show-error "$SOURCE_URL" --output "$ZIP"
           else
             cat "$DIR"/chunks/*.b64 | tr -d '\r\n ' | base64 --decode > "$ZIP"
