@@ -14,8 +14,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Resolve release request
         id: meta
@@ -24,21 +22,24 @@ jobs:
           set -euo pipefail
           REQUEST="$(find .release -type f -name publish.json | sort | tail -n 1)"
           test -n "$REQUEST"
-          python - "$REQUEST" "$GITHUB_OUTPUT" <<'PY'
-import json, os, sys
-req_path, out_path = sys.argv[1], sys.argv[2]
-with open(req_path, encoding='utf-8') as f:
-    d = json.load(f)
-required = ['version','assetName','sha256','downloadUrl']
-missing = [k for k in required if not d.get(k)]
-if missing:
-    raise SystemExit('Missing fields: ' + ', '.join(missing))
-with open(out_path, 'a', encoding='utf-8') as out:
-    for key in required:
-        out.write(f"{key}={d[key]}\n")
-    out.write(f"notes={d.get('notes','Sample Manager ' + d['version'])}\n")
-    out.write(f"dir={os.path.dirname(req_path)}\n")
-PY
+          VERSION="$(jq -r '.version' "$REQUEST")"
+          ASSET_NAME="$(jq -r '.assetName' "$REQUEST")"
+          SHA256="$(jq -r '.sha256' "$REQUEST")"
+          DOWNLOAD_URL="$(jq -r '.downloadUrl' "$REQUEST")"
+          NOTES="$(jq -r '.notes // ("Sample Manager " + .version)' "$REQUEST")"
+          DIR="$(dirname "$REQUEST")"
+          test -n "$VERSION"
+          test -n "$ASSET_NAME"
+          test -n "$SHA256"
+          test -n "$DOWNLOAD_URL"
+          {
+            echo "version=$VERSION"
+            echo "assetName=$ASSET_NAME"
+            echo "sha256=$SHA256"
+            echo "downloadUrl=$DOWNLOAD_URL"
+            echo "notes=$NOTES"
+            echo "dir=$DIR"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Rebuild and verify package
         id: package
@@ -50,7 +51,7 @@ PY
         run: |
           set -euo pipefail
           ZIP="$RUNNER_TEMP/$ASSET_NAME"
-          cat "$DIR"/chunks/*.b64 | base64 --decode > "$ZIP"
+          cat "$DIR"/chunks/*.b64 | tr -d '\r\n ' | base64 --decode > "$ZIP"
           ACTUAL_SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
           test "$ACTUAL_SHA" = "$EXPECTED_SHA"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
@@ -66,20 +67,13 @@ PY
         run: |
           set -euo pipefail
           MANIFEST="$RUNNER_TEMP/update.json"
-          python - "$MANIFEST" <<'PY'
-import json, os, sys
-out = sys.argv[1]
-data = {
-    'version': os.environ['VERSION'],
-    'downloadUrl': os.environ['DOWNLOAD_URL'],
-    'sha256': os.environ['SHA256'],
-    'mandatory': False,
-    'notes': os.environ.get('NOTES','')
-}
-with open(out, 'w', encoding='utf-8') as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
-    f.write('\n')
-PY
+          jq -n \
+            --arg version "$VERSION" \
+            --arg downloadUrl "$DOWNLOAD_URL" \
+            --arg sha256 "$SHA256" \
+            --arg notes "$NOTES" \
+            '{version:$version,downloadUrl:$downloadUrl,sha256:$sha256,mandatory:false,notes:$notes}' \
+            > "$MANIFEST"
           echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release and upload assets
@@ -101,15 +95,3 @@ PY
               --title "Sample Manager $VERSION" \
               --notes "$NOTES"
           fi
-
-      - name: Remove transient staging
-        env:
-          DIR: ${{ steps.meta.outputs.dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm -r "$DIR"
-          git commit -m "chore: clear release staging"
-          git push origin HEAD:main
