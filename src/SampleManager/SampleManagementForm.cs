@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SampleManager
@@ -30,9 +31,15 @@ namespace SampleManager
         private readonly Label completedCountLabel;
         private readonly Label totalCountLabel;
         private readonly Button detailButton;
+        private readonly Button claimButton;
         private readonly TabControl sampleTabs;
+        private readonly string clientId;
         private SampleManagementRecord selectedSample;
         private bool updatingFilters;
+        private bool backgroundRefreshRunning;
+        private DateTime lastBackgroundRefresh;
+        private string pendingClaimOperationId;
+        private string pendingClaimSampleId;
 
         public SampleManagementForm(
             GoogleSheetsSampleRepository repository,
@@ -40,6 +47,7 @@ namespace SampleManager
         {
             this.repository = repository;
             this.cache = cache;
+            clientId = ClientIdentity.GetOrCreate();
             AppTheme.ApplyForm(this);
             Text = "Quản lý mẫu";
             StartPosition = FormStartPosition.CenterParent;
@@ -113,7 +121,7 @@ namespace SampleManager
 
             FlowLayoutPanel actionPanel = new FlowLayoutPanel();
             actionPanel.Dock = DockStyle.Right;
-            actionPanel.Width = 630;
+            actionPanel.Width = 730;
             actionPanel.Height = 60;
             actionPanel.FlowDirection = FlowDirection.LeftToRight;
             actionPanel.WrapContents = false;
@@ -164,6 +172,15 @@ namespace SampleManager
             detailButton.Height = 36;
             detailButton.Click += OpenSelectedSample;
             actionPanel.Controls.Add(detailButton);
+
+            claimButton = new Button();
+            claimButton.Text = "Nhận mẫu";
+            claimButton.Size = new Size(88, 36);
+            claimButton.Margin = new Padding(0, 0, 8, 0);
+            claimButton.Enabled = false;
+            AppTheme.StyleSecondaryButton(claimButton);
+            claimButton.Click += ClaimSelectedSample;
+            actionPanel.Controls.Add(claimButton);
 
             Button closeButton = new Button();
             closeButton.Text = "Đóng";
@@ -254,6 +271,7 @@ namespace SampleManager
             cache.Changed += CacheChanged;
             FormClosed += delegate { cache.Changed -= CacheChanged; };
             Shown += LoadCachedData;
+            Activated += RefreshOnActivated;
         }
 
         private Label CreateCounter(string text, int width)
@@ -644,6 +662,66 @@ namespace SampleManager
                 ? null
                 : grid.SelectedRows[0].Tag as SampleManagementRecord;
             detailButton.Enabled = selectedSample != null;
+            UpdateClaimButton();
+        }
+
+        private void UpdateClaimButton()
+        {
+            if (claimButton == null)
+            {
+                return;
+            }
+            claimButton.Enabled = selectedSample != null
+                && sampleTabs.SelectedIndex == 0
+                && String.Equals(
+                    NormalizeSampleStatus(selectedSample.TrangThaiMay),
+                    "Chờ may",
+                    StringComparison.Ordinal)
+                && String.IsNullOrWhiteSpace(selectedSample.ClaimOwner);
+            claimButton.Text = selectedSample != null
+                && String.Equals(selectedSample.ClaimOwner, clientId, StringComparison.Ordinal)
+                ? "Đã nhận"
+                : "Nhận mẫu";
+        }
+
+        private async void ClaimSelectedSample(object sender, EventArgs e)
+        {
+            if (selectedSample == null || !claimButton.Enabled)
+            {
+                return;
+            }
+            try
+            {
+                claimButton.Enabled = false;
+                if (pendingClaimOperationId == null || pendingClaimSampleId != selectedSample.MauId)
+                {
+                    pendingClaimOperationId = Guid.NewGuid().ToString("D");
+                    pendingClaimSampleId = selectedSample.MauId;
+                }
+                SampleManagementRecord readBack = await repository.ClaimSampleAsync(
+                    selectedSample,
+                    clientId,
+                    pendingClaimOperationId);
+                cache.AddOrReplaceSample(readBack);
+                pendingClaimOperationId = null;
+                pendingClaimSampleId = null;
+                AppTheme.SetSuccessStatus(statusLabel, "Đã nhận mẫu");
+                RenderFromCache();
+            }
+            catch (SampleGatewayException exception)
+            {
+                AppTheme.SetErrorStatus(statusLabel, exception.IsClaimed ? "Mẫu đã được nhận" : "Nhận mẫu thất bại");
+                MessageBox.Show(this, exception.Message, "Không thể nhận mẫu", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (Exception exception)
+            {
+                AppTheme.SetErrorStatus(statusLabel, "Nhận mẫu thất bại");
+                MessageBox.Show(this, exception.Message, "Không thể nhận mẫu", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                UpdateClaimButton();
+            }
         }
 
         private void SampleDoubleClick(object sender, DataGridViewCellEventArgs e)
@@ -660,7 +738,7 @@ namespace SampleManager
             {
                 return;
             }
-            using (SampleDetailForm form = new SampleDetailForm(repository, cache, selectedSample))
+            using (SampleDetailForm form = new SampleDetailForm(repository, cache, selectedSample, clientId))
             {
                 form.ShowDialog(this);
                 if (form.LastReadBack != null)
@@ -670,7 +748,7 @@ namespace SampleManager
             }
         }
 
-        private void RefreshLiveData(object sender, EventArgs e)
+        private async void RefreshLiveData(object sender, EventArgs e)
         {
             try
             {
@@ -678,9 +756,9 @@ namespace SampleManager
                 string selectedQaId = qaFilter.SelectedItem == null
                     ? null
                     : ((QaOption)qaFilter.SelectedItem).Id;
-                IList<QaOption> liveQaOptions = repository.ReadActiveQaOptions();
-                IList<SampleRequestRecord> liveRequests = repository.ReadAllRequests();
-                IList<SampleManagementRecord> liveSamples = repository.ReadAllSamples();
+                IList<QaOption> liveQaOptions = await Task.Run(() => repository.ReadActiveQaOptions());
+                IList<SampleRequestRecord> liveRequests = await Task.Run(() => repository.ReadAllRequests());
+                IList<SampleManagementRecord> liveSamples = await Task.Run(() => repository.ReadAllSamples());
                 cache.ReplaceLive(liveQaOptions, liveRequests, liveSamples);
                 LoadQaFilter(cache.Snapshot().QaOptions, selectedQaId);
                 RenderFromCache();
@@ -699,6 +777,37 @@ namespace SampleManager
             finally
             {
                 Cursor = Cursors.Default;
+            }
+        }
+
+        private async void RefreshOnActivated(object sender, EventArgs e)
+        {
+            if (backgroundRefreshRunning
+                || (DateTime.Now - lastBackgroundRefresh).TotalSeconds < 2)
+            {
+                return;
+            }
+            backgroundRefreshRunning = true;
+            lastBackgroundRefresh = DateTime.Now;
+            try
+            {
+                IList<QaOption> liveQaOptions = await Task.Run(() => repository.ReadActiveQaOptions());
+                IList<SampleRequestRecord> liveRequests = await Task.Run(() => repository.ReadAllRequests());
+                IList<SampleManagementRecord> liveSamples = await Task.Run(() => repository.ReadAllSamples());
+                if (IsDisposed) return;
+                cache.ReplaceLive(liveQaOptions, liveRequests, liveSamples);
+                RenderFromCache();
+            }
+            catch (Exception)
+            {
+                if (!IsDisposed)
+                {
+                    AppTheme.SetErrorStatus(statusLabel, "Làm mới thất bại");
+                }
+            }
+            finally
+            {
+                backgroundRefreshRunning = false;
             }
         }
 

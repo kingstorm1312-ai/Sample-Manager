@@ -28,6 +28,9 @@
     <Compile Include="AuthenticationService.cs" />
     <Compile Include="PasswordDialog.cs" />
     <Compile Include="GoogleOAuth.cs" />
+    <Compile Include="GatewaySettings.cs" />
+    <Compile Include="ClientIdentity.cs" />
+    <Compile Include="SampleWriteGatewayClient.cs" />
     <Compile Include="GoogleSheetsSampleRepository.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>

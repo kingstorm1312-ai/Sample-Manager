@@ -205,8 +205,16 @@ try {
         throw ('origin does not point to ' + $Repository + ': ' + $remoteUrl)
     }
 
-    $existingRelease = @(& gh release view $Tag '--repo' $Repository 2>$null)
-    if ($LASTEXITCODE -eq 0) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $existingRelease = @(& gh release view $Tag '--repo' $Repository 2>$null)
+        $existingReleaseExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($existingReleaseExitCode -eq 0) {
         throw ('GitHub Release already exists: ' + $Tag)
     }
 
@@ -261,7 +269,8 @@ try {
         Invoke-Native 'git' @('reset', '--quiet', '--', '.release')
     }
 
-    $stagedFiles = @(Get-GitOutput @('diff', '--cached', '--name-only') -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $stagedFileList = Get-GitOutput @('diff', '--cached', '--name-only')
+    $stagedFiles = @($stagedFileList -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     foreach ($stagedFile in $stagedFiles) {
         if ($stagedFile -match '^(?i)(\.secrets|release)(/|\\)' -or $stagedFile -match '(?i)(auth-state\.dat|google_token|credential)') {
             throw ('Protected or generated file is staged: ' + $stagedFile)

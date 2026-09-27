@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SampleManager
@@ -19,23 +20,29 @@ namespace SampleManager
         private readonly TextBox noteTextBox;
         private readonly ComboBox phienBanComboBox;
         private readonly ComboBox sampleStatusComboBox;
+        private readonly string clientId;
         private readonly Label statusLabel;
+        private readonly Button saveButton;
+        private readonly Button releaseClaimButton;
         private readonly Panel contentScroll;
         private readonly Panel contentHost;
         private readonly Panel headerCard;
         private readonly Panel sourceCard;
         private readonly Panel updateCard;
+        private string pendingOperationId;
 
         public SampleManagementRecord LastReadBack { get; private set; }
 
         public SampleDetailForm(
             GoogleSheetsSampleRepository repository,
             SampleManagerCache cache,
-            SampleManagementRecord source)
+            SampleManagementRecord source,
+            string clientId)
         {
             this.repository = repository;
             this.cache = cache;
             this.source = source;
+            this.clientId = clientId;
             AppTheme.ApplyForm(this);
             Text = "Chi tiết mẫu";
             StartPosition = FormStartPosition.CenterParent;
@@ -152,14 +159,26 @@ namespace SampleManager
                 phienBanComboBox.BackColor = AppTheme.NeutralBackground;
             }
             sampleStatusComboBox.SelectedItem = NormalizeSampleStatus(source.TrangThaiMay);
+            bool canEdit = String.Equals(source.ClaimOwner, clientId, StringComparison.Ordinal);
+            SetManagementEditable(canEdit);
 
-            Button saveButton = new Button();
+            saveButton = new Button();
             saveButton.Text = "Lưu";
             saveButton.Size = new Size(120, 38);
             saveButton.Location = new Point(24, 13);
             AppTheme.StylePrimaryButton(saveButton);
             saveButton.Click += SaveSample;
             footer.Controls.Add(saveButton);
+
+            releaseClaimButton = new Button();
+            releaseClaimButton.Text = "Trả lại";
+            releaseClaimButton.Size = new Size(100, 38);
+            releaseClaimButton.Location = new Point(158, 13);
+            releaseClaimButton.Enabled = String.Equals(source.ClaimOwner, clientId, StringComparison.Ordinal)
+                && !String.Equals(NormalizeSampleStatus(source.TrangThaiMay), "Đã may", StringComparison.Ordinal);
+            AppTheme.StyleSecondaryButton(releaseClaimButton);
+            releaseClaimButton.Click += ReleaseClaim;
+            footer.Controls.Add(releaseClaimButton);
 
             Button closeButton = new Button();
             closeButton.Text = "Đóng";
@@ -284,6 +303,27 @@ namespace SampleManager
             contentScroll.AutoScrollMinSize = new Size(0, contentHost.Height + 24);
         }
 
+        private void SetManagementEditable(bool enabled)
+        {
+            approvedDatePicker.Enabled = enabled;
+            expiryDatePicker.Enabled = enabled;
+            deliveredDatePicker.Enabled = enabled;
+            approverTextBox.ReadOnly = !enabled;
+            storageTextBox.ReadOnly = !enabled;
+            noteTextBox.ReadOnly = !enabled;
+            sampleStatusComboBox.Enabled = enabled;
+            phienBanComboBox.Enabled = enabled && CanConfirmVersionChange();
+            if (!enabled)
+            {
+                approverTextBox.BackColor = AppTheme.NeutralBackground;
+                storageTextBox.BackColor = AppTheme.NeutralBackground;
+                noteTextBox.BackColor = AppTheme.NeutralBackground;
+                sampleStatusComboBox.BackColor = AppTheme.NeutralBackground;
+                phienBanComboBox.BackColor = AppTheme.NeutralBackground;
+                if (saveButton != null) saveButton.Enabled = false;
+            }
+        }
+
         private void SetDatePicker(DateTimePicker picker, string value)
         {
             DateTime parsed;
@@ -299,7 +339,7 @@ namespace SampleManager
             }
         }
 
-        private void SaveSample(object sender, EventArgs e)
+        private async void SaveSample(object sender, EventArgs e)
         {
             try
             {
@@ -346,22 +386,87 @@ namespace SampleManager
                     GhiChu = noteTextBox.Text.Trim(),
                     TrangThaiMay = sampleStatusComboBox.SelectedItem == null
                         ? "Chờ may"
-                        : sampleStatusComboBox.SelectedItem.ToString()
+                        : sampleStatusComboBox.SelectedItem.ToString(),
+                    RowVersion = source.RowVersion,
+                    ClaimOwner = source.ClaimOwner,
+                    ClaimedAt = source.ClaimedAt
                 };
-                SampleManagementRecord readBack = repository.UpdateSampleAndReadBack(
+                IDictionary<string, string> changedFields = new Dictionary<string, string>();
+                AddChangedField(changedFields, "NgayDuyet", source.NgayDuyet, record.NgayDuyet);
+                AddChangedField(changedFields, "NgayHetHan", source.NgayHetHan, record.NgayHetHan);
+                AddChangedField(changedFields, "NguoiDuyet", source.NguoiDuyet, record.NguoiDuyet);
+                AddChangedField(changedFields, "NoiLuu", source.NoiLuu, record.NoiLuu);
+                AddChangedField(changedFields, "NgayGiaoMau", source.NgayGiaoMau, record.NgayGiaoMau);
+                AddChangedField(changedFields, "GhiChu", source.GhiChu, record.GhiChu);
+                AddChangedField(changedFields, "TrangThaiMay", source.TrangThaiMay, record.TrangThaiMay);
+                if (versionChanged)
+                {
+                    changedFields["PhienBan"] = record.PhienBan;
+                    changedFields["Sample_ID"] = record.SampleId;
+                }
+                if (pendingOperationId == null) pendingOperationId = Guid.NewGuid().ToString("D");
+                saveButton.Enabled = false;
+                SampleManagementRecord readBack = await repository.UpdateSampleAndReadBackAsync(
                     record,
-                    GetRequestValue("PhienBan"),
-                    contract);
+                    changedFields,
+                    clientId,
+                    pendingOperationId);
                 cache.AddOrReplaceSample(readBack);
                 LastReadBack = readBack;
+                pendingOperationId = null;
                 AppTheme.SetSuccessStatus(statusLabel, "Đã lưu");
+                DialogResult = DialogResult.OK;
+                Close();
+            }
+            catch (SampleGatewayException exception)
+            {
+                saveButton.Enabled = true;
+                AppTheme.SetErrorStatus(statusLabel, exception.IsConflict ? "Dữ liệu đã đổi" : "Không thể lưu");
+                MessageBox.Show(this, exception.Message, "Không thể lưu", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (Exception exception)
+            {
+                saveButton.Enabled = true;
+                AppTheme.SetErrorStatus(statusLabel, "Không thể lưu");
+                MessageBox.Show(this, exception.Message, "Không thể lưu", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private async void ReleaseClaim(object sender, EventArgs e)
+        {
+            if (!String.Equals(source.ClaimOwner, clientId, StringComparison.Ordinal)) return;
+            try
+            {
+                releaseClaimButton.Enabled = false;
+                if (pendingOperationId == null) pendingOperationId = Guid.NewGuid().ToString("D");
+                SampleManagementRecord readBack = await repository.ReleaseClaimAsync(
+                    source,
+                    clientId,
+                    pendingOperationId);
+                cache.AddOrReplaceSample(readBack);
+                LastReadBack = readBack;
+                pendingOperationId = null;
+                AppTheme.SetSuccessStatus(statusLabel, "Đã trả lại");
                 DialogResult = DialogResult.OK;
                 Close();
             }
             catch (Exception exception)
             {
-                AppTheme.SetErrorStatus(statusLabel, "Không thể lưu");
-                MessageBox.Show(this, exception.Message, "Không thể lưu", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                releaseClaimButton.Enabled = true;
+                AppTheme.SetErrorStatus(statusLabel, "Không thể trả lại");
+                MessageBox.Show(this, exception.Message, "Không thể trả lại", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private static void AddChangedField(
+            IDictionary<string, string> changedFields,
+            string field,
+            string before,
+            string after)
+        {
+            if (!String.Equals(before ?? String.Empty, after ?? String.Empty, StringComparison.Ordinal))
+            {
+                changedFields[field] = after ?? String.Empty;
             }
         }
 

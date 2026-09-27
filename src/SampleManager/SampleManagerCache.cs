@@ -63,7 +63,24 @@ namespace SampleManager
             IList<SampleRequestRecord> nextRequests,
             IList<SampleManagementRecord> nextSamples)
         {
-            Replace(nextQaOptions, nextRequests, nextSamples);
+            lock (syncRoot)
+            {
+                if (!isLoaded)
+                {
+                    qaOptions = CloneQaOptions(nextQaOptions);
+                    requests = CloneRequests(nextRequests);
+                    samples = CloneSamples(nextSamples);
+                }
+                else
+                {
+                    qaOptions = CloneQaOptions(nextQaOptions);
+                    requests = MergeRequests(requests, nextRequests);
+                    samples = MergeSamples(samples, nextSamples);
+                }
+                updatedAtLocal = DateTime.Now;
+                isLoaded = true;
+            }
+            NotifyChanged();
         }
 
         public void AddOrReplace(SampleRequestRecord record)
@@ -81,7 +98,10 @@ namespace SampleManager
                 {
                     if (String.Equals(nextRequests[index].YeuCauId, record.YeuCauId, StringComparison.Ordinal))
                     {
-                        nextRequests[index] = CloneRequest(record);
+                        if (CompareVersion(record.RowVersion, nextRequests[index].RowVersion) >= 0)
+                        {
+                            nextRequests[index] = CloneRequest(record);
+                        }
                         replaced = true;
                         break;
                     }
@@ -114,7 +134,10 @@ namespace SampleManager
                     {
                         if (String.Equals(nextSamples[index].MauId, addedSamples[addedIndex].MauId, StringComparison.Ordinal))
                         {
-                            nextSamples[index] = CloneSample(addedSamples[addedIndex]);
+                            if (CompareVersion(addedSamples[addedIndex].RowVersion, nextSamples[index].RowVersion) >= 0)
+                            {
+                                nextSamples[index] = CloneSample(addedSamples[addedIndex]);
+                            }
                             replaced = true;
                             break;
                         }
@@ -194,6 +217,32 @@ namespace SampleManager
             return result;
         }
 
+        private static IList<SampleRequestRecord> MergeRequests(
+            IList<SampleRequestRecord> current,
+            IList<SampleRequestRecord> live)
+        {
+            IList<SampleRequestRecord> result = CloneRequests(live);
+            for (int currentIndex = 0; currentIndex < current.Count; currentIndex++)
+            {
+                bool found = false;
+                for (int liveIndex = 0; liveIndex < result.Count; liveIndex++)
+                {
+                    if (!String.Equals(result[liveIndex].YeuCauId, current[currentIndex].YeuCauId, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    found = true;
+                    if (CompareVersion(current[currentIndex].RowVersion, result[liveIndex].RowVersion) > 0)
+                    {
+                        result[liveIndex] = CloneRequest(current[currentIndex]);
+                    }
+                    break;
+                }
+                if (!found) result.Add(CloneRequest(current[currentIndex]));
+            }
+            return result;
+        }
+
         private static SampleRequestRecord CloneRequest(SampleRequestRecord source)
         {
             return new SampleRequestRecord
@@ -209,7 +258,8 @@ namespace SampleManager
                 PhienBan = source.PhienBan,
                 Deadline = source.Deadline,
                 TrangThai = source.TrangThai,
-                GhiChu = source.GhiChu
+                GhiChu = source.GhiChu,
+                RowVersion = source.RowVersion
             };
         }
 
@@ -219,6 +269,32 @@ namespace SampleManager
             for (int index = 0; index < source.Count; index++)
             {
                 result.Add(CloneSample(source[index]));
+            }
+            return result;
+        }
+
+        private static IList<SampleManagementRecord> MergeSamples(
+            IList<SampleManagementRecord> current,
+            IList<SampleManagementRecord> live)
+        {
+            IList<SampleManagementRecord> result = CloneSamples(live);
+            for (int currentIndex = 0; currentIndex < current.Count; currentIndex++)
+            {
+                bool found = false;
+                for (int liveIndex = 0; liveIndex < result.Count; liveIndex++)
+                {
+                    if (!String.Equals(result[liveIndex].MauId, current[currentIndex].MauId, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    found = true;
+                    if (CompareVersion(current[currentIndex].RowVersion, result[liveIndex].RowVersion) > 0)
+                    {
+                        result[liveIndex] = CloneSample(current[currentIndex]);
+                    }
+                    break;
+                }
+                if (!found) result.Add(CloneSample(current[currentIndex]));
             }
             return result;
         }
@@ -238,8 +314,24 @@ namespace SampleManager
                 NoiLuu = source.NoiLuu,
                 NgayGiaoMau = source.NgayGiaoMau,
                 GhiChu = source.GhiChu,
-                TrangThaiMay = source.TrangThaiMay
+                TrangThaiMay = source.TrangThaiMay,
+                RowVersion = source.RowVersion,
+                ClaimOwner = source.ClaimOwner,
+                ClaimedAt = source.ClaimedAt
             };
+        }
+
+        private static int CompareVersion(string left, string right)
+        {
+            int leftVersion = ParseVersion(left);
+            int rightVersion = ParseVersion(right);
+            return leftVersion.CompareTo(rightVersion);
+        }
+
+        private static int ParseVersion(string value)
+        {
+            int version;
+            return Int32.TryParse(value, out version) && version >= 0 ? version : 0;
         }
     }
 }

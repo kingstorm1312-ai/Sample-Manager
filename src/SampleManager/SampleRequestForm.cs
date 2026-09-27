@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SampleManager
@@ -26,6 +27,7 @@ namespace SampleManager
         private readonly Label resultLabel;
         private readonly SampleRequestCreationService creationService;
         private SampleRequestRecord pendingSaveRequest;
+        private string pendingOperationId;
 
         public SampleRequestRecord LastReadBack { get; private set; }
 
@@ -286,7 +288,7 @@ namespace SampleManager
             }
         }
 
-        private void SaveRequest(object sender, EventArgs e)
+        private async void SaveRequest(object sender, EventArgs e)
         {
             try
             {
@@ -321,12 +323,14 @@ namespace SampleManager
                         GhiChu = ghiChuTextBox.Text.Trim()
                     };
                     pendingSaveRequest = record;
+                    pendingOperationId = Guid.NewGuid().ToString("D");
                 }
 
                 saveButton.Enabled = false;
-                SampleRequestCreationResult result = creationService.Create(record);
+                SampleRequestCreationResult result = await creationService.CreateAsync(record, pendingOperationId);
                 LastReadBack = result.Request;
                 pendingSaveRequest = null;
+                pendingOperationId = null;
                 AppTheme.SetSuccessStatus(resultLabel, "Đã lưu");
                 normalizedLabel.Text = "Đã chuẩn hóa: " + LastReadBack.SoHopDong + " | " + LastReadBack.MaVatTu;
                 normalizedLabel.ForeColor = AppTheme.Success;
@@ -336,12 +340,11 @@ namespace SampleManager
             catch (SampleRequestCreationException exception)
             {
                 saveButton.Enabled = true;
-                if (exception.RequestPersisted)
+                if (exception.Request != null)
                 {
                     pendingSaveRequest = exception.Request;
-                    LastReadBack = exception.Request;
-                    AppTheme.SetErrorStatus(resultLabel, "Đã ghi yêu cầu; tạo mẫu lỗi");
-                    MessageBox.Show(this, "Đã ghi yêu cầu; tạo mẫu chưa hoàn tất. Có thể lưu lại.", "Tạo mẫu lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    AppTheme.SetErrorStatus(resultLabel, "Chưa hoàn tất; có thể thử lại");
+                    MessageBox.Show(this, exception.Message + " Thử lại sẽ dùng cùng mã thao tác.", "Không thể lưu", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
                 else
                 {
@@ -369,6 +372,7 @@ namespace SampleManager
             deadlinePicker.Value = DateTime.Today;
             LastReadBack = null;
             pendingSaveRequest = null;
+            pendingOperationId = null;
             normalizedLabel.Text = String.Empty;
             normalizedLabel.ForeColor = AppTheme.Muted;
             AppTheme.SetMutedStatus(resultLabel, "Chưa lưu");

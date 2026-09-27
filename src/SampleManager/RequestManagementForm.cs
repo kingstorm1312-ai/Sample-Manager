@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SampleManager
@@ -26,6 +27,11 @@ namespace SampleManager
         private readonly Button distributeButton;
         private readonly Button cancelButton;
         private bool settingThisMonth;
+        private bool mutationInProgress;
+        private string pendingCancelOperationId;
+        private string pendingCancelRequestId;
+        private string pendingDistributeOperationId;
+        private string pendingDistributeRequestId;
         private IList<SampleRequestRecord> records;
 
         public RequestManagementForm(
@@ -381,14 +387,14 @@ namespace SampleManager
             return filtered;
         }
 
-        private void RefreshLiveData(object sender, EventArgs e)
+        private async void RefreshLiveData(object sender, EventArgs e)
         {
             try
             {
                 Cursor = Cursors.WaitCursor;
-                IList<QaOption> liveQaOptions = repository.ReadActiveQaOptions();
-                IList<SampleRequestRecord> liveRequests = repository.ReadAllRequests();
-                IList<SampleManagementRecord> liveSamples = repository.ReadAllSamples();
+                IList<QaOption> liveQaOptions = await Task.Run(() => repository.ReadActiveQaOptions());
+                IList<SampleRequestRecord> liveRequests = await Task.Run(() => repository.ReadAllRequests());
+                IList<SampleManagementRecord> liveSamples = await Task.Run(() => repository.ReadAllSamples());
                 cache.ReplaceLive(liveQaOptions, liveRequests, liveSamples);
                 records = FilterByQa(cache.Snapshot().Requests);
                 ApplyFilters();
@@ -593,6 +599,7 @@ namespace SampleManager
 
             SampleRequestRecord selected = GetSelectedRequest();
             cancelButton.Enabled = selected != null
+                && !mutationInProgress
                 && !String.Equals(selected.TrangThai, "Hủy", StringComparison.OrdinalIgnoreCase);
         }
 
@@ -606,6 +613,7 @@ namespace SampleManager
             SampleRequestRecord selected = GetSelectedRequest();
             SampleManagerCacheSnapshot snapshot = cache.Snapshot();
             distributeButton.Enabled = selected != null
+                && !mutationInProgress
                 && requestTabs.SelectedIndex == 1
                 && SampleNormalization.GetRequestDisplayStatus(selected, snapshot.Samples) == "Đã may";
         }
@@ -620,7 +628,7 @@ namespace SampleManager
             return activeGrid.SelectedRows[0].Tag as SampleRequestRecord;
         }
 
-        private void CancelSelectedRequest(object sender, EventArgs e)
+        private async void CancelSelectedRequest(object sender, EventArgs e)
         {
             SampleRequestRecord selected = GetSelectedRequest();
             if (selected == null)
@@ -642,26 +650,30 @@ namespace SampleManager
             try
             {
                 Cursor = Cursors.WaitCursor;
-                SampleRequestRecord canceled = new SampleRequestRecord
+                mutationInProgress = true;
+                cancelButton.Enabled = false;
+                if (pendingCancelOperationId == null || pendingCancelRequestId != selected.YeuCauId)
                 {
-                    YeuCauId = selected.YeuCauId,
-                    NgayTaoYeuCau = selected.NgayTaoYeuCau,
-                    SoHopDong = selected.SoHopDong,
-                    MaVatTu = selected.MaVatTu,
-                    TenTui = selected.TenTui,
-                    QaId = selected.QaId,
-                    NoiYeuCau = selected.NoiYeuCau,
-                    SoLuongMau = selected.SoLuongMau,
-                    PhienBan = selected.PhienBan,
-                    Deadline = selected.Deadline,
-                    TrangThai = "Hủy",
-                    GhiChu = selected.GhiChu
-                };
-                SampleRequestRecord readBack = repository.UpdateRequestAndReadBack(canceled);
+                    pendingCancelOperationId = Guid.NewGuid().ToString("D");
+                    pendingCancelRequestId = selected.YeuCauId;
+                }
+                IDictionary<string, string> changedFields = new Dictionary<string, string>();
+                changedFields["TrangThai"] = "Hủy";
+                SampleRequestRecord readBack = await repository.UpdateRequestAndReadBackAsync(
+                    selected,
+                    changedFields,
+                    pendingCancelOperationId);
                 cache.AddOrReplace(readBack);
+                pendingCancelOperationId = null;
+                pendingCancelRequestId = null;
                 records = FilterByQa(cache.Snapshot().Requests);
                 ApplyFilters();
                 AppTheme.SetSuccessStatus(statusLabel, "Đã hủy");
+            }
+            catch (SampleGatewayException exception)
+            {
+                AppTheme.SetErrorStatus(statusLabel, exception.IsConflict ? "Dữ liệu đã đổi" : "Hủy thất bại");
+                MessageBox.Show(this, exception.Message, "Không thể hủy yêu cầu", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             catch (Exception exception)
             {
@@ -675,11 +687,14 @@ namespace SampleManager
             }
             finally
             {
+                mutationInProgress = false;
                 Cursor = Cursors.Default;
+                UpdateCancelButton();
+                UpdateDistributeButton();
             }
         }
 
-        private void MarkSelectedAsDistributed(object sender, EventArgs e)
+        private async void MarkSelectedAsDistributed(object sender, EventArgs e)
         {
             SampleRequestRecord selected = GetSelectedRequest();
             if (selected == null)
@@ -720,26 +735,30 @@ namespace SampleManager
             try
             {
                 Cursor = Cursors.WaitCursor;
-                SampleRequestRecord distributed = new SampleRequestRecord
+                mutationInProgress = true;
+                distributeButton.Enabled = false;
+                if (pendingDistributeOperationId == null || pendingDistributeRequestId != selected.YeuCauId)
                 {
-                    YeuCauId = selected.YeuCauId,
-                    NgayTaoYeuCau = selected.NgayTaoYeuCau,
-                    SoHopDong = selected.SoHopDong,
-                    MaVatTu = selected.MaVatTu,
-                    TenTui = selected.TenTui,
-                    QaId = selected.QaId,
-                    NoiYeuCau = selected.NoiYeuCau,
-                    SoLuongMau = selected.SoLuongMau,
-                    PhienBan = selected.PhienBan,
-                    Deadline = selected.Deadline,
-                    TrangThai = "Đã phân phối",
-                    GhiChu = selected.GhiChu
-                };
-                SampleRequestRecord readBack = repository.UpdateRequestAndReadBack(distributed);
+                    pendingDistributeOperationId = Guid.NewGuid().ToString("D");
+                    pendingDistributeRequestId = selected.YeuCauId;
+                }
+                IDictionary<string, string> changedFields = new Dictionary<string, string>();
+                changedFields["TrangThai"] = "Đã phân phối";
+                SampleRequestRecord readBack = await repository.UpdateRequestAndReadBackAsync(
+                    selected,
+                    changedFields,
+                    pendingDistributeOperationId);
                 cache.AddOrReplace(readBack);
+                pendingDistributeOperationId = null;
+                pendingDistributeRequestId = null;
                 records = FilterByQa(cache.Snapshot().Requests);
                 ApplyFilters();
                 AppTheme.SetSuccessStatus(statusLabel, "Đã phân phối");
+            }
+            catch (SampleGatewayException exception)
+            {
+                AppTheme.SetErrorStatus(statusLabel, exception.IsConflict ? "Dữ liệu đã đổi" : "Phân phối thất bại");
+                MessageBox.Show(this, exception.Message, "Không thể phân phối", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             catch (Exception exception)
             {
@@ -753,7 +772,10 @@ namespace SampleManager
             }
             finally
             {
+                mutationInProgress = false;
                 Cursor = Cursors.Default;
+                UpdateCancelButton();
+                UpdateDistributeButton();
             }
         }
 

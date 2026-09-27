@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SampleManager
@@ -20,7 +21,9 @@ namespace SampleManager
         private readonly DateTimePicker deadlinePicker;
         private readonly ComboBox statusComboBox;
         private readonly TextBox noteTextBox;
+        private readonly Button saveButton;
         private readonly Label statusLabel;
+        private string pendingOperationId;
 
         public SampleRequestRecord LastReadBack { get; private set; }
 
@@ -118,7 +121,7 @@ namespace SampleManager
             statusComboBox.TabStop = false;
             noteTextBox.Text = source.GhiChu;
 
-            Button saveButton = new Button();
+            saveButton = new Button();
             saveButton.Text = "Lưu";
             saveButton.Size = new Size(120, 38);
             saveButton.Location = new Point(24, 616);
@@ -233,7 +236,7 @@ namespace SampleManager
             parent.Controls.Add(label);
         }
 
-        private void SaveRequest(object sender, EventArgs e)
+        private async void SaveRequest(object sender, EventArgs e)
         {
             try
             {
@@ -257,19 +260,53 @@ namespace SampleManager
                     PhienBan = phienBan,
                     Deadline = deadlinePicker.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     TrangThai = source.TrangThai,
-                    GhiChu = noteTextBox.Text.Trim()
+                    GhiChu = noteTextBox.Text.Trim(),
+                    RowVersion = source.RowVersion
                 };
-                SampleRequestRecord readBack = repository.UpdateRequestAndReadBack(record);
+                IDictionary<string, string> changedFields = new Dictionary<string, string>();
+                AddChangedField(changedFields, "SoHopDong", source.SoHopDong, record.SoHopDong);
+                AddChangedField(changedFields, "MaVatTu", source.MaVatTu, record.MaVatTu);
+                AddChangedField(changedFields, "TenTui", source.TenTui, record.TenTui);
+                AddChangedField(changedFields, "NoiYeuCau", source.NoiYeuCau, record.NoiYeuCau);
+                AddChangedField(changedFields, "SoLuongMau", source.SoLuongMau, record.SoLuongMau);
+                AddChangedField(changedFields, "Deadline", source.Deadline, record.Deadline);
+                AddChangedField(changedFields, "GhiChu", source.GhiChu, record.GhiChu);
+                if (pendingOperationId == null) pendingOperationId = Guid.NewGuid().ToString("D");
+                saveButton.Enabled = false;
+                SampleRequestRecord readBack = await repository.UpdateRequestAndReadBackAsync(
+                    record,
+                    changedFields,
+                    pendingOperationId);
                 cache.AddOrReplace(readBack);
                 LastReadBack = readBack;
+                pendingOperationId = null;
                 AppTheme.SetSuccessStatus(statusLabel, "Đã lưu");
                 DialogResult = DialogResult.OK;
                 Close();
             }
+            catch (SampleGatewayException exception)
+            {
+                saveButton.Enabled = true;
+                AppTheme.SetErrorStatus(statusLabel, exception.IsConflict ? "Dữ liệu đã đổi" : "Không thể lưu");
+                MessageBox.Show(this, exception.Message, "Không thể lưu", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
             catch (Exception exception)
             {
+                saveButton.Enabled = true;
                 AppTheme.SetErrorStatus(statusLabel, "Không thể lưu");
                 MessageBox.Show(this, exception.Message, "Không thể lưu", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private static void AddChangedField(
+            IDictionary<string, string> changedFields,
+            string field,
+            string before,
+            string after)
+        {
+            if (!String.Equals(before ?? String.Empty, after ?? String.Empty, StringComparison.Ordinal))
+            {
+                changedFields[field] = after ?? String.Empty;
             }
         }
 

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Threading.Tasks;
 
 namespace SampleManager
 {
@@ -48,72 +49,38 @@ namespace SampleManager
             this.cache = cache;
         }
 
-        public SampleRequestCreationResult Create(SampleRequestRecord request)
+        public async Task<SampleRequestCreationResult> CreateAsync(
+            SampleRequestRecord request,
+            string operationId)
         {
             if (request == null || String.IsNullOrWhiteSpace(request.YeuCauId))
             {
                 throw new InvalidOperationException("Yêu cầu không hợp lệ.");
             }
 
-            request.PhienBan = "V1";
             int sampleCount = ParseSampleCount(request.SoLuongMau);
-            SampleRequestRecord readBackRequest = EnsureRequest(request);
-            IList<SampleManagementRecord> expectedSamples = BuildSamples(readBackRequest, sampleCount);
-            IList<SampleManagementRecord> readBackSamples;
             try
             {
-                readBackSamples = repository.EnsureSamplesAndReadBack(expectedSamples);
+                GatewayCreateResult result = await repository.CreateRequestAndSamplesAsync(
+                    request,
+                    sampleCount,
+                    operationId);
+                if (result == null || result.Request == null || result.Samples == null)
+                {
+                    throw new InvalidOperationException("Gateway trả về kết quả tạo mẫu không hợp lệ.");
+                }
+
+                cache.AddOrReplace(result.Request);
+                cache.AddOrReplaceSamples(result.Samples);
+                return new SampleRequestCreationResult(result.Request, result.Samples);
             }
             catch (Exception exception)
             {
                 throw new SampleRequestCreationException(
-                    "Yêu cầu đã ghi nhưng tạo mẫu chưa hoàn tất.",
+                    "Không thể hoàn tất yêu cầu qua write gateway.",
                     exception,
-                    true,
-                    readBackRequest);
-            }
-
-            cache.AddOrReplace(readBackRequest);
-            cache.AddOrReplaceSamples(readBackSamples);
-            return new SampleRequestCreationResult(readBackRequest, readBackSamples);
-        }
-
-        private SampleRequestRecord EnsureRequest(SampleRequestRecord request)
-        {
-            try
-            {
-                SampleRequestRecord existing = repository.ReadById(request.YeuCauId);
-                if (existing != null)
-                {
-                    return existing;
-                }
-
-                return repository.AppendAndReadBack(request);
-            }
-            catch (Exception firstException)
-            {
-                try
-                {
-                    SampleRequestRecord existing = repository.ReadById(request.YeuCauId);
-                    if (existing != null)
-                    {
-                        return existing;
-                    }
-                }
-                catch (Exception readBackException)
-                {
-                    throw new SampleRequestCreationException(
-                        "Không thể xác nhận yêu cầu.",
-                        readBackException,
-                        false,
-                        null);
-                }
-
-                throw new SampleRequestCreationException(
-                    "Không thể ghi yêu cầu mẫu.",
-                    firstException,
                     false,
-                    null);
+                    request);
             }
         }
 
@@ -127,35 +94,5 @@ namespace SampleManager
             return count;
         }
 
-        private static IList<SampleManagementRecord> BuildSamples(
-            SampleRequestRecord request,
-            int sampleCount)
-        {
-            string contract = SampleNormalization.NormalizeSoHopDong(request.SoHopDong);
-            string version = SampleNormalization.NormalizePhienBan(request.PhienBan);
-            IList<SampleManagementRecord> samples = new List<SampleManagementRecord>();
-            for (int index = 1; index <= sampleCount; index++)
-            {
-                samples.Add(new SampleManagementRecord
-                {
-                    MauId = "MAU-" + Guid.NewGuid().ToString("N").ToUpperInvariant(),
-                    YeuCauId = request.YeuCauId,
-                    SampleId = SampleNormalization.BuildSampleId(
-                        contract,
-                        version,
-                        index.ToString(CultureInfo.InvariantCulture)),
-                    PhienBan = version,
-                    SttMau = index.ToString(CultureInfo.InvariantCulture),
-                    NgayDuyet = String.Empty,
-                    NgayHetHan = String.Empty,
-                    NguoiDuyet = String.Empty,
-                    NoiLuu = String.Empty,
-                    NgayGiaoMau = String.Empty,
-                    GhiChu = String.Empty,
-                    TrangThaiMay = "Chờ may"
-                });
-            }
-            return samples;
-        }
     }
 }

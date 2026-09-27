@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Text;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
 namespace SampleManager
@@ -33,6 +34,7 @@ namespace SampleManager
         public string Deadline { get; set; }
         public string TrangThai { get; set; }
         public string GhiChu { get; set; }
+        public string RowVersion { get; set; }
     }
 
     internal sealed class SampleManagementRecord
@@ -49,6 +51,15 @@ namespace SampleManager
         public string NgayGiaoMau { get; set; }
         public string GhiChu { get; set; }
         public string TrangThaiMay { get; set; }
+        public string RowVersion { get; set; }
+        public string ClaimOwner { get; set; }
+        public string ClaimedAt { get; set; }
+    }
+
+    internal sealed class GatewayCreateResult
+    {
+        public SampleRequestRecord Request { get; set; }
+        public IList<SampleManagementRecord> Samples { get; set; }
     }
 
     internal sealed class GoogleSheetsSampleRepository
@@ -57,17 +68,17 @@ namespace SampleManager
         private const string RequestSheet = "YEU_CAU_MAU";
         private const string QaSheet = "DM_QA";
         private const string SampleSheet = "QUAN_LY_MAU";
-        private const int RequestSheetId = 0;
-        private const long SampleSheetId = 2040218823L;
         private const int TimeoutMilliseconds = 20000;
         private readonly string credentialsPath;
         private readonly string tokenPath;
+        private readonly SampleWriteGatewayClient writeGateway;
 
         public GoogleSheetsSampleRepository()
         {
             string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
             credentialsPath = Path.Combine(baseDirectory, ".secrets", "google_oauth_desktop.json");
             tokenPath = Path.Combine(baseDirectory, ".secrets", "google_token.json");
+            writeGateway = new SampleWriteGatewayClient();
         }
 
         public IList<QaOption> ReadActiveQaOptions()
@@ -105,491 +116,177 @@ namespace SampleManager
 
         public IList<SampleRequestRecord> ReadAllRequests()
         {
-            IDictionary<string, object> result = GetJson(BuildValuesUrl(RequestSheet, "A:L"));
+            IDictionary<string, object> result = GetJson(BuildValuesUrl(RequestSheet, "A:M"));
             IList<IList<string>> rows = ParseRows(result);
             IList<SampleRequestRecord> records = new List<SampleRequestRecord>();
-            if (rows.Count == 0)
-            {
-                return records;
-            }
-
+            if (rows.Count == 0) return records;
             IList<string> headers = rows[0];
             for (int rowIndex = 1; rowIndex < rows.Count; rowIndex++)
             {
                 SampleRequestRecord record = ToRecord(headers, rows[rowIndex]);
-                records.Add(record);
+                if (!String.IsNullOrWhiteSpace(record.YeuCauId)) records.Add(record);
             }
             return records;
         }
 
         public IList<SampleManagementRecord> ReadAllSamples()
         {
-            IDictionary<string, object> result = GetJson(BuildValuesUrl(SampleSheet, "A:L"));
+            IDictionary<string, object> result = GetJson(BuildValuesUrl(SampleSheet, "A:O"));
             IList<IList<string>> rows = ParseRows(result);
             IList<SampleManagementRecord> records = new List<SampleManagementRecord>();
-            if (rows.Count == 0)
-            {
-                return records;
-            }
-
+            if (rows.Count == 0) return records;
             IList<string> headers = rows[0];
             for (int rowIndex = 1; rowIndex < rows.Count; rowIndex++)
             {
-                records.Add(ToSampleRecord(headers, rows[rowIndex]));
+                SampleManagementRecord record = ToSampleRecord(headers, rows[rowIndex]);
+                if (!String.IsNullOrWhiteSpace(record.MauId)) records.Add(record);
             }
             return records;
         }
 
-        public SampleRequestRecord AppendAndReadBack(SampleRequestRecord record)
-        {
-            IList<string> headers = ReadHeaders();
-            IList<object> values = new List<object>();
-            for (int index = 0; index < headers.Count; index++)
-            {
-                values.Add(ValueForHeader(record, headers[index]));
-            }
-            IDictionary<string, object> body = new Dictionary<string, object>();
-            body["majorDimension"] = "ROWS";
-            body["values"] = new object[] { values };
-            PostJson(BuildAppendUrl(), body);
-
-            SampleRequestRecord readBack = ReadById(record.YeuCauId);
-            if (readBack == null)
-            {
-                throw new InvalidOperationException("Đã ghi nhưng không đọc lại được bản ghi theo YeuCau_ID.");
-            }
-            return readBack;
-        }
-
-        public SampleRequestRecord UpdateRequestAndReadBack(SampleRequestRecord record)
-        {
-            if (record == null || String.IsNullOrWhiteSpace(record.YeuCauId))
-            {
-                throw new InvalidOperationException("Yêu cầu không hợp lệ.");
-            }
-
-            IList<string> headers = ReadHeaders();
-            IDictionary<string, object> result = GetJson(BuildValuesUrl(RequestSheet, "A:L"));
-            IList<IList<string>> rows = ParseRows(result);
-            int matchedPhysicalRow = -1;
-            for (int rowIndex = 1; rowIndex < rows.Count; rowIndex++)
-            {
-                if (String.Equals(Cell(rows[rowIndex], HeaderIndex(headers, "YeuCau_ID")), record.YeuCauId, StringComparison.Ordinal))
-                {
-                    matchedPhysicalRow = rowIndex + 1;
-                    break;
-                }
-            }
-            if (matchedPhysicalRow < 0)
-            {
-                throw new InvalidOperationException("Không tìm thấy yêu cầu để cập nhật.");
-            }
-
-            IList<object> values = new List<object>();
-            for (int index = 0; index < headers.Count; index++)
-            {
-                values.Add(ValueForHeader(record, headers[index]));
-            }
-            IDictionary<string, object> body = new Dictionary<string, object>();
-            body["majorDimension"] = "ROWS";
-            body["values"] = new object[] { values };
-            PutJson(BuildRequestUpdateUrl(matchedPhysicalRow), body);
-
-            SampleRequestRecord updated = ReadById(record.YeuCauId);
-            if (updated == null)
-            {
-                throw new InvalidOperationException("Đã cập nhật nhưng không đọc lại được yêu cầu.");
-            }
-            return updated;
-        }
-
-        public void EnsureSampleStatusColumn()
-        {
-            IList<string> headers = ReadSampleHeaders();
-            if (HeaderIndex(headers, "TrangThaiMay") >= 0)
-            {
-                return;
-            }
-
-            IDictionary<string, object> body = new Dictionary<string, object>();
-            body["majorDimension"] = "ROWS";
-            body["values"] = new object[] { new object[] { "TrangThaiMay" } };
-            PutJson(BuildSampleHeaderUpdateUrl(), body);
-        }
-
-        public IList<SampleManagementRecord> AppendSamplesAndReadBack(IList<SampleManagementRecord> records)
-        {
-            return EnsureSamplesAndReadBack(records);
-        }
-
-        public IList<SampleManagementRecord> EnsureSamplesAndReadBack(IList<SampleManagementRecord> records)
-        {
-            if (records == null || records.Count == 0)
-            {
-                throw new InvalidOperationException("Không có mẫu để tạo.");
-            }
-
-            IList<SampleManagementRecord> existing = ReadAllSamples();
-            int existingForRequest = 0;
-            for (int existingIndex = 0; existingIndex < existing.Count; existingIndex++)
-            {
-                if (String.Equals(existing[existingIndex].YeuCauId, records[0].YeuCauId, StringComparison.Ordinal))
-                {
-                    existingForRequest++;
-                }
-            }
-            if (existingForRequest > records.Count)
-            {
-                throw new InvalidOperationException("Yêu cầu đã có nhiều mẫu hơn số lượng cần tạo.");
-            }
-
-            IList<SampleManagementRecord> missing = new List<SampleManagementRecord>();
-            for (int recordIndex = 0; recordIndex < records.Count; recordIndex++)
-            {
-                SampleManagementRecord found = FindSampleBySampleId(existing, records[recordIndex].SampleId);
-                if (found != null)
-                {
-                    if (!String.Equals(found.YeuCauId, records[recordIndex].YeuCauId, StringComparison.Ordinal))
-                    {
-                        throw new InvalidOperationException("Sample_ID đã được liên kết với yêu cầu khác.");
-                    }
-                    continue;
-                }
-
-                SampleManagementRecord sameSequence = FindSampleByRequestAndStt(
-                    existing,
-                    records[recordIndex].YeuCauId,
-                    records[recordIndex].SttMau);
-                if (sameSequence != null)
-                {
-                    throw new InvalidOperationException("Yêu cầu đã có mẫu trùng số thứ tự.");
-                }
-                missing.Add(records[recordIndex]);
-            }
-
-            if (missing.Count > 0)
-            {
-                AppendSampleRows(missing);
-                existing = ReadAllSamples();
-            }
-
-            IList<SampleManagementRecord> matched = new List<SampleManagementRecord>();
-            for (int recordIndex = 0; recordIndex < records.Count; recordIndex++)
-            {
-                SampleManagementRecord found = FindSampleBySampleId(existing, records[recordIndex].SampleId);
-                if (found == null)
-                {
-                    throw new InvalidOperationException("Đã ghi nhưng không đọc lại được mẫu.");
-                }
-                if (!String.Equals(found.YeuCauId, records[recordIndex].YeuCauId, StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException("Mẫu đọc lại không thuộc đúng yêu cầu.");
-                }
-                matched.Add(found);
-            }
-            return matched;
-        }
-
-        private void AppendSampleRows(IList<SampleManagementRecord> records)
-        {
-            IList<string> headers = ReadSampleHeaders();
-            IDictionary<string, object> existingResult = GetJson(BuildValuesUrl(SampleSheet, "A:V"));
-            IList<IList<string>> existingRows = ParseRows(existingResult);
-            int firstPhysicalRow = existingRows.Count + 1;
-            IList<object> values = new List<object>();
-            for (int recordIndex = 0; recordIndex < records.Count; recordIndex++)
-            {
-                IList<object> row = new List<object>();
-                for (int headerIndex = 0; headerIndex < headers.Count; headerIndex++)
-                {
-                    row.Add(SampleValueForHeader(records[recordIndex], headers[headerIndex]));
-                }
-                values.Add(row);
-            }
-
-            IDictionary<string, object> body = new Dictionary<string, object>();
-            body["majorDimension"] = "ROWS";
-            body["values"] = values;
-            PutJson(BuildSampleWriteUrl(firstPhysicalRow, records.Count), body);
-        }
-
-        public SampleManagementRecord UpdateSampleAndReadBack(SampleManagementRecord record)
-        {
-            return UpdateSampleAndReadBack(record, record == null ? String.Empty : record.PhienBan, String.Empty);
-        }
-
-        public SampleManagementRecord UpdateSampleAndReadBack(
-            SampleManagementRecord record,
-            string requestVersion,
-            string contract)
-        {
-            if (record == null || String.IsNullOrWhiteSpace(record.MauId))
-            {
-                throw new InvalidOperationException("Mẫu không hợp lệ.");
-            }
-
-            IList<string> headers = ReadSampleHeaders();
-            IDictionary<string, object> result = GetJson(BuildValuesUrl(SampleSheet, "A:L"));
-            IList<IList<string>> rows = ParseRows(result);
-            int matchedPhysicalRow = -1;
-            for (int rowIndex = 1; rowIndex < rows.Count; rowIndex++)
-            {
-                if (String.Equals(Cell(rows[rowIndex], HeaderIndex(headers, "Mau_ID")), record.MauId, StringComparison.Ordinal))
-                {
-                    matchedPhysicalRow = rowIndex + 1;
-                    break;
-                }
-            }
-            if (matchedPhysicalRow < 0)
-            {
-                throw new InvalidOperationException("Không tìm thấy mẫu để cập nhật.");
-            }
-
-            IList<SampleManagementRecord> currentRecords = ReadAllSamples();
-            SampleManagementRecord current = FindSampleByMauId(currentRecords, record.MauId);
-            if (current == null)
-            {
-                throw new InvalidOperationException("Không đọc được mẫu hiện tại.");
-            }
-            if (!String.Equals(current.YeuCauId, record.YeuCauId, StringComparison.Ordinal)
-                || !String.Equals(current.SttMau, record.SttMau, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Dữ liệu liên kết của mẫu không khớp.");
-            }
-
-            string currentVersion = SampleNormalization.NormalizePhienBan(current.PhienBan);
-            string nextVersion = SampleNormalization.NormalizePhienBan(record.PhienBan);
-            bool versionChanged = !String.Equals(currentVersion, nextVersion, StringComparison.OrdinalIgnoreCase);
-            if (versionChanged)
-            {
-                string initialVersion = SampleNormalization.NormalizePhienBan(requestVersion);
-                if (!String.Equals(currentVersion, initialVersion, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException("Phiên bản đã được xác nhận; không thể đổi lại.");
-                }
-
-                string expectedSampleId = SampleNormalization.BuildSampleId(contract, nextVersion, record.SttMau);
-                if (!String.Equals(record.SampleId, expectedSampleId, StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException("Sample_ID không khớp phiên bản mới.");
-                }
-
-                SampleManagementRecord duplicate = FindSampleBySampleId(currentRecords, expectedSampleId);
-                if (duplicate != null && !String.Equals(duplicate.MauId, record.MauId, StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException("Sample_ID mới đã tồn tại.");
-                }
-            }
-
-            for (int index = 0; index < headers.Count; index++)
-            {
-                bool isVersionHeader = headers[index] == "Sample_ID" || headers[index] == "PhienBan";
-                if (isVersionHeader && !versionChanged)
-                {
-                    continue;
-                }
-                if (!isVersionHeader && !IsEditableSampleHeader(headers[index]))
-                {
-                    continue;
-                }
-
-                IDictionary<string, object> body = new Dictionary<string, object>();
-                body["majorDimension"] = "ROWS";
-                body["values"] = new object[]
-                {
-                    new object[] { SampleValueForHeader(record, headers[index]) }
-                };
-                PutJson(BuildSampleUpdateUrl(matchedPhysicalRow, index), body);
-            }
-
-            IList<SampleManagementRecord> readBack = ReadAllSamples();
-            SampleManagementRecord updated = FindSampleByMauId(readBack, record.MauId);
-            if (updated == null)
-            {
-                throw new InvalidOperationException("Đã cập nhật nhưng không đọc lại được mẫu.");
-            }
-            return updated;
-        }
-
-        public void DeleteSampleById(string mauId)
-        {
-            IDictionary<string, object> result = GetJson(BuildValuesUrl(SampleSheet, "A:L"));
-            IList<IList<string>> rows = ParseRows(result);
-            IList<string> headers = rows.Count == 0 ? null : rows[0];
-            if (headers == null)
-            {
-                throw new InvalidOperationException("Không có header QUAN_LY_MAU để xóa.");
-            }
-
-            int matchedPhysicalRow = -1;
-            for (int rowIndex = 1; rowIndex < rows.Count; rowIndex++)
-            {
-                if (String.Equals(Cell(rows[rowIndex], HeaderIndex(headers, "Mau_ID")), mauId, StringComparison.Ordinal))
-                {
-                    matchedPhysicalRow = rowIndex + 1;
-                    break;
-                }
-            }
-            if (matchedPhysicalRow < 0)
-            {
-                throw new InvalidOperationException("Không tìm thấy mẫu test để xóa: " + mauId);
-            }
-
-            IDictionary<string, object> rowRange = new Dictionary<string, object>();
-            rowRange["sheetId"] = SampleSheetId;
-            rowRange["dimension"] = "ROWS";
-            rowRange["startIndex"] = matchedPhysicalRow - 1;
-            rowRange["endIndex"] = matchedPhysicalRow;
-            IDictionary<string, object> deleteDimension = new Dictionary<string, object>();
-            deleteDimension["range"] = rowRange;
-            IDictionary<string, object> request = new Dictionary<string, object>();
-            request["deleteDimension"] = deleteDimension;
-            IDictionary<string, object> body = new Dictionary<string, object>();
-            body["requests"] = new object[] { request };
-            PostJson(BuildBatchUpdateUrl(), body);
-        }
-
         public SampleRequestRecord ReadById(string requestId)
         {
-            IDictionary<string, object> result = GetJson(BuildValuesUrl(RequestSheet, "A:L"));
-            IList<IList<string>> rows = ParseRows(result);
-            if (rows.Count == 0)
+            IList<SampleRequestRecord> records = ReadAllRequests();
+            for (int index = 0; index < records.Count; index++)
             {
-                return null;
-            }
-            IList<string> headers = rows[0];
-            for (int rowIndex = 1; rowIndex < rows.Count; rowIndex++)
-            {
-                if (String.Equals(Cell(rows[rowIndex], HeaderIndex(headers, "YeuCau_ID")), requestId, StringComparison.Ordinal))
-                {
-                    return ToRecord(headers, rows[rowIndex]);
-                }
+                if (String.Equals(records[index].YeuCauId, requestId, StringComparison.Ordinal)) return records[index];
             }
             return null;
         }
 
-        public void DeleteById(string requestId)
+        public async Task<GatewayCreateResult> CreateRequestAndSamplesAsync(
+            SampleRequestRecord record,
+            int sampleCount,
+            string operationId)
         {
-            IDictionary<string, object> result = GetJson(BuildValuesUrl(RequestSheet, "A:L"));
-            IList<IList<string>> rows = ParseRows(result);
-            IList<string> headers = rows.Count == 0 ? null : rows[0];
-            if (headers == null)
+            IDictionary<string, object> payload = new Dictionary<string, object>();
+            payload["request"] = RequestPayload(record);
+            payload["sampleCount"] = sampleCount;
+            SampleGatewayResult response = await writeGateway.ExecuteAsync(operationId, "CREATE_REQUEST", payload);
+            IDictionary<string, object> result = response.Result;
+            return new GatewayCreateResult
             {
-                throw new InvalidOperationException("Không có header YEU_CAU_MAU để xóa.");
-            }
-            int matchedPhysicalRow = -1;
-            for (int rowIndex = 1; rowIndex < rows.Count; rowIndex++)
-            {
-                if (String.Equals(Cell(rows[rowIndex], HeaderIndex(headers, "YeuCau_ID")), requestId, StringComparison.Ordinal))
-                {
-                    matchedPhysicalRow = rowIndex + 1;
-                    break;
-                }
-            }
-            if (matchedPhysicalRow < 0)
-            {
-                throw new InvalidOperationException("Không tìm thấy record test để xóa: " + requestId);
-            }
+                Request = ToRequestRecord(GetObject(result, "request")),
+                Samples = ToSampleRecords(GetObjectArray(result, "samples"))
+            };
+        }
 
-            IDictionary<string, object> rowRange = new Dictionary<string, object>();
-            rowRange["sheetId"] = RequestSheetId;
-            rowRange["dimension"] = "ROWS";
-            rowRange["startIndex"] = matchedPhysicalRow - 1;
-            rowRange["endIndex"] = matchedPhysicalRow;
-            IDictionary<string, object> deleteDimension = new Dictionary<string, object>();
-            deleteDimension["range"] = rowRange;
-            IDictionary<string, object> request = new Dictionary<string, object>();
-            request["deleteDimension"] = deleteDimension;
-            IDictionary<string, object> body = new Dictionary<string, object>();
-            body["requests"] = new object[] { request };
-            PostJson(BuildBatchUpdateUrl(), body);
-            if (ReadById(requestId) != null)
+        public async Task<SampleRequestRecord> UpdateRequestAndReadBackAsync(
+            SampleRequestRecord record,
+            IDictionary<string, string> changedFields,
+            string operationId)
+        {
+            IDictionary<string, object> payload = new Dictionary<string, object>();
+            payload["recordId"] = record.YeuCauId;
+            payload["expectedVersion"] = ParseVersion(record.RowVersion);
+            payload["changedFields"] = StringFields(changedFields);
+            SampleGatewayResult response = await writeGateway.ExecuteAsync(operationId, "UPDATE_REQUEST", payload);
+            return ToRequestRecord(GetObject(response.Result, "request"));
+        }
+
+        public async Task<SampleManagementRecord> UpdateSampleAndReadBackAsync(
+            SampleManagementRecord record,
+            IDictionary<string, string> changedFields,
+            string clientId,
+            string operationId)
+        {
+            IDictionary<string, object> payload = new Dictionary<string, object>();
+            payload["recordId"] = record.MauId;
+            payload["expectedVersion"] = ParseVersion(record.RowVersion);
+            payload["clientId"] = clientId;
+            payload["changedFields"] = StringFields(changedFields);
+            SampleGatewayResult response = await writeGateway.ExecuteAsync(operationId, "UPDATE_SAMPLE", payload);
+            return ToSampleRecord(GetObject(response.Result, "sample"));
+        }
+
+        public async Task<SampleManagementRecord> ClaimSampleAsync(
+            SampleManagementRecord record,
+            string clientId,
+            string operationId)
+        {
+            IDictionary<string, object> payload = new Dictionary<string, object>();
+            payload["recordId"] = record.MauId;
+            payload["expectedVersion"] = ParseVersion(record.RowVersion);
+            payload["clientId"] = clientId;
+            SampleGatewayResult response = await writeGateway.ExecuteAsync(operationId, "CLAIM_SAMPLE", payload);
+            return ToSampleRecord(GetObject(response.Result, "sample"));
+        }
+
+        public async Task<SampleManagementRecord> ReleaseClaimAsync(
+            SampleManagementRecord record,
+            string clientId,
+            string operationId)
+        {
+            IDictionary<string, object> payload = new Dictionary<string, object>();
+            payload["recordId"] = record.MauId;
+            payload["expectedVersion"] = ParseVersion(record.RowVersion);
+            payload["clientId"] = clientId;
+            SampleGatewayResult response = await writeGateway.ExecuteAsync(operationId, "RELEASE_CLAIM", payload);
+            return ToSampleRecord(GetObject(response.Result, "sample"));
+        }
+
+        public async Task DeleteByIdAsync(string requestId, string operationId)
+        {
+            IDictionary<string, object> payload = new Dictionary<string, object>();
+            payload["recordId"] = requestId;
+            await writeGateway.ExecuteAsync(operationId, "DELETE_REQUEST", payload);
+        }
+
+        public async Task DeleteSampleByIdAsync(string mauId, string operationId)
+        {
+            IDictionary<string, object> payload = new Dictionary<string, object>();
+            payload["recordId"] = mauId;
+            await writeGateway.ExecuteAsync(operationId, "DELETE_SAMPLE", payload);
+        }
+
+        private IDictionary<string, object> GetJson(string url)
+        {
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+            request.Method = "GET";
+            request.Timeout = TimeoutMilliseconds;
+            request.ReadWriteTimeout = TimeoutMilliseconds;
+            request.Headers[HttpRequestHeader.Authorization] = "Bearer " + Authenticate();
+            request.Accept = "application/json";
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+            using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
             {
-                throw new InvalidOperationException("Đã xóa nhưng readback vẫn còn record test: " + requestId);
+                return DeserializeObject(reader.ReadToEnd());
             }
         }
 
-        private IList<string> ReadHeaders()
+        private string Authenticate()
         {
-            IDictionary<string, object> result = GetJson(BuildValuesUrl(RequestSheet, "A:L"));
-            IList<IList<string>> rows = ParseRows(result);
-            if (rows.Count == 0)
-            {
-                throw new InvalidOperationException("YEU_CAU_MAU chưa có header.");
-            }
-            string[] required = { "YeuCau_ID", "NgayTaoYeuCau", "SoHopDong", "MaVatTu", "TenTui", "QA_ID", "NoiYeuCau", "SoLuongMau", "PhienBan", "Deadline", "TrangThai", "GhiChu" };
-            for (int index = 0; index < required.Length; index++)
-            {
-                if (HeaderIndex(rows[0], required[index]) < 0)
-                {
-                    throw new InvalidOperationException("YEU_CAU_MAU thiếu cột: " + required[index]);
-                }
-            }
-            return rows[0];
+            return GoogleOAuth.GetAccessToken(credentialsPath, tokenPath);
         }
 
-        private static object ValueForHeader(SampleRequestRecord record, string header)
+        private static IDictionary<string, object> RequestPayload(SampleRequestRecord record)
         {
-            if (header == "YeuCau_ID") return record.YeuCauId;
-            if (header == "NgayTaoYeuCau") return record.NgayTaoYeuCau;
-            if (header == "SoHopDong") return record.SoHopDong;
-            if (header == "MaVatTu") return record.MaVatTu;
-            if (header == "TenTui") return record.TenTui;
-            if (header == "QA_ID") return record.QaId;
-            if (header == "NoiYeuCau") return record.NoiYeuCau;
-            if (header == "SoLuongMau") return record.SoLuongMau;
-            if (header == "PhienBan") return SampleNormalization.NormalizePhienBan(record.PhienBan);
-            if (header == "Deadline") return record.Deadline;
-            if (header == "TrangThai") return record.TrangThai;
-            if (header == "GhiChu") return record.GhiChu;
-            return String.Empty;
+            IDictionary<string, object> payload = new Dictionary<string, object>();
+            payload["YeuCau_ID"] = record.YeuCauId;
+            payload["NgayTaoYeuCau"] = record.NgayTaoYeuCau;
+            payload["SoHopDong"] = record.SoHopDong;
+            payload["MaVatTu"] = record.MaVatTu;
+            payload["TenTui"] = record.TenTui;
+            payload["QA_ID"] = record.QaId;
+            payload["NoiYeuCau"] = record.NoiYeuCau;
+            payload["SoLuongMau"] = record.SoLuongMau;
+            payload["PhienBan"] = SampleNormalization.NormalizePhienBan(record.PhienBan);
+            payload["Deadline"] = record.Deadline;
+            payload["TrangThai"] = record.TrangThai;
+            payload["GhiChu"] = record.GhiChu;
+            return payload;
         }
 
-        private IList<string> ReadSampleHeaders()
+        private static IDictionary<string, object> StringFields(IDictionary<string, string> source)
         {
-            IDictionary<string, object> result = GetJson(BuildValuesUrl(SampleSheet, "A:L"));
-            IList<IList<string>> rows = ParseRows(result);
-            if (rows.Count == 0)
+            IDictionary<string, object> fields = new Dictionary<string, object>();
+            if (source == null) return fields;
+            foreach (KeyValuePair<string, string> pair in source)
             {
-                throw new InvalidOperationException("QUAN_LY_MAU chưa có header.");
+                fields[pair.Key] = pair.Value ?? String.Empty;
             }
-            string[] required = { "Mau_ID", "YeuCau_ID", "Sample_ID", "PhienBan", "STTMau", "NgayDuyet", "NgayHetHan", "NguoiDuyet", "NoiLuu", "NgayGiaoMau", "GhiChu", "TrangThaiMay" };
-            for (int index = 0; index < required.Length; index++)
-            {
-                if (HeaderIndex(rows[0], required[index]) < 0)
-                {
-                    throw new InvalidOperationException("QUAN_LY_MAU thiếu cột: " + required[index]);
-                }
-            }
-            return rows[0];
-        }
-
-        private static object SampleValueForHeader(SampleManagementRecord record, string header)
-        {
-            if (header == "Mau_ID") return record.MauId;
-            if (header == "YeuCau_ID") return record.YeuCauId;
-            if (header == "Sample_ID") return record.SampleId;
-            if (header == "PhienBan") return record.PhienBan;
-            if (header == "STTMau") return record.SttMau;
-            if (header == "NgayDuyet") return record.NgayDuyet;
-            if (header == "NgayHetHan") return record.NgayHetHan;
-            if (header == "NguoiDuyet") return record.NguoiDuyet;
-            if (header == "NoiLuu") return record.NoiLuu;
-            if (header == "NgayGiaoMau") return record.NgayGiaoMau;
-            if (header == "GhiChu") return record.GhiChu;
-            if (header == "TrangThaiMay") return record.TrangThaiMay;
-            return String.Empty;
-        }
-
-        private static bool IsEditableSampleHeader(string header)
-        {
-            return header == "NgayDuyet"
-                || header == "NgayHetHan"
-                || header == "NguoiDuyet"
-                || header == "NoiLuu"
-                || header == "NgayGiaoMau"
-                || header == "GhiChu"
-                || header == "TrangThaiMay";
+            return fields;
         }
 
         private static SampleRequestRecord ToRecord(IList<string> headers, IList<string> row)
@@ -607,7 +304,8 @@ namespace SampleManager
                 PhienBan = SampleNormalization.NormalizePhienBan(Value(row, headers, "PhienBan")),
                 Deadline = Value(row, headers, "Deadline"),
                 TrangThai = Value(row, headers, "TrangThai"),
-                GhiChu = Value(row, headers, "GhiChu")
+                GhiChu = Value(row, headers, "GhiChu"),
+                RowVersion = Value(row, headers, "RowVersion")
             };
         }
 
@@ -618,7 +316,7 @@ namespace SampleManager
                 MauId = Value(row, headers, "Mau_ID"),
                 YeuCauId = Value(row, headers, "YeuCau_ID"),
                 SampleId = Value(row, headers, "Sample_ID"),
-                PhienBan = Value(row, headers, "PhienBan"),
+                PhienBan = SampleNormalization.NormalizePhienBan(Value(row, headers, "PhienBan")),
                 SttMau = Value(row, headers, "STTMau"),
                 NgayDuyet = Value(row, headers, "NgayDuyet"),
                 NgayHetHan = Value(row, headers, "NgayHetHan"),
@@ -626,116 +324,95 @@ namespace SampleManager
                 NoiLuu = Value(row, headers, "NoiLuu"),
                 NgayGiaoMau = Value(row, headers, "NgayGiaoMau"),
                 GhiChu = Value(row, headers, "GhiChu"),
-                TrangThaiMay = Value(row, headers, "TrangThaiMay")
+                TrangThaiMay = Value(row, headers, "TrangThaiMay"),
+                RowVersion = Value(row, headers, "RowVersion"),
+                ClaimOwner = Value(row, headers, "ClaimOwner"),
+                ClaimedAt = Value(row, headers, "ClaimedAt")
             };
         }
 
-        private static SampleManagementRecord FindSampleByMauId(
-            IList<SampleManagementRecord> records,
-            string mauId)
+        private static SampleRequestRecord ToRequestRecord(IDictionary<string, object> source)
         {
-            for (int index = 0; index < records.Count; index++)
+            return new SampleRequestRecord
             {
-                if (String.Equals(records[index].MauId, mauId, StringComparison.Ordinal))
-                {
-                    return records[index];
-                }
-            }
-            return null;
+                YeuCauId = ObjectValue(source, "YeuCau_ID"),
+                NgayTaoYeuCau = ObjectValue(source, "NgayTaoYeuCau"),
+                SoHopDong = ObjectValue(source, "SoHopDong"),
+                MaVatTu = ObjectValue(source, "MaVatTu"),
+                TenTui = ObjectValue(source, "TenTui"),
+                QaId = ObjectValue(source, "QA_ID"),
+                NoiYeuCau = ObjectValue(source, "NoiYeuCau"),
+                SoLuongMau = ObjectValue(source, "SoLuongMau"),
+                PhienBan = SampleNormalization.NormalizePhienBan(ObjectValue(source, "PhienBan")),
+                Deadline = ObjectValue(source, "Deadline"),
+                TrangThai = ObjectValue(source, "TrangThai"),
+                GhiChu = ObjectValue(source, "GhiChu"),
+                RowVersion = ObjectValue(source, "RowVersion")
+            };
         }
 
-        private static SampleManagementRecord FindSampleBySampleId(
-            IList<SampleManagementRecord> records,
-            string sampleId)
+        private static SampleManagementRecord ToSampleRecord(IDictionary<string, object> source)
         {
-            for (int index = 0; index < records.Count; index++)
+            return new SampleManagementRecord
             {
-                if (String.Equals(records[index].SampleId, sampleId, StringComparison.Ordinal))
-                {
-                    return records[index];
-                }
-            }
-            return null;
+                MauId = ObjectValue(source, "Mau_ID"),
+                YeuCauId = ObjectValue(source, "YeuCau_ID"),
+                SampleId = ObjectValue(source, "Sample_ID"),
+                PhienBan = SampleNormalization.NormalizePhienBan(ObjectValue(source, "PhienBan")),
+                SttMau = ObjectValue(source, "STTMau"),
+                NgayDuyet = ObjectValue(source, "NgayDuyet"),
+                NgayHetHan = ObjectValue(source, "NgayHetHan"),
+                NguoiDuyet = ObjectValue(source, "NguoiDuyet"),
+                NoiLuu = ObjectValue(source, "NoiLuu"),
+                NgayGiaoMau = ObjectValue(source, "NgayGiaoMau"),
+                GhiChu = ObjectValue(source, "GhiChu"),
+                TrangThaiMay = ObjectValue(source, "TrangThaiMay"),
+                RowVersion = ObjectValue(source, "RowVersion"),
+                ClaimOwner = ObjectValue(source, "ClaimOwner"),
+                ClaimedAt = ObjectValue(source, "ClaimedAt")
+            };
         }
 
-        private static SampleManagementRecord FindSampleByRequestAndStt(
-            IList<SampleManagementRecord> records,
-            string requestId,
-            string sttMau)
+        private static IList<SampleManagementRecord> ToSampleRecords(object[] values)
         {
-            for (int index = 0; index < records.Count; index++)
+            IList<SampleManagementRecord> records = new List<SampleManagementRecord>();
+            if (values == null) return records;
+            for (int index = 0; index < values.Length; index++)
             {
-                if (String.Equals(records[index].YeuCauId, requestId, StringComparison.Ordinal)
-                    && String.Equals(records[index].SttMau, sttMau, StringComparison.Ordinal))
-                {
-                    return records[index];
-                }
+                IDictionary<string, object> item = values[index] as IDictionary<string, object>;
+                if (item != null) records.Add(ToSampleRecord(item));
             }
-            return null;
+            return records;
         }
 
-        private IDictionary<string, object> GetJson(string url)
+        private static IDictionary<string, object> GetObject(IDictionary<string, object> source, string key)
         {
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-            request.Method = "GET";
-            request.Timeout = TimeoutMilliseconds;
-            request.ReadWriteTimeout = TimeoutMilliseconds;
-            request.Headers[HttpRequestHeader.Authorization] = "Bearer " + Authenticate();
-            request.Accept = "application/json";
-            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-            using (StreamReader reader = new StreamReader(response.GetResponseStream()))
-            {
-                return DeserializeObject(reader.ReadToEnd());
-            }
+            object value;
+            return source != null && source.TryGetValue(key, out value)
+                ? value as IDictionary<string, object> ?? new Dictionary<string, object>()
+                : new Dictionary<string, object>();
         }
 
-        private void PostJson(string url, IDictionary<string, object> body)
+        private static object[] GetObjectArray(IDictionary<string, object> source, string key)
         {
-            byte[] payload = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(body));
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-            request.Method = "POST";
-            request.Timeout = TimeoutMilliseconds;
-            request.ReadWriteTimeout = TimeoutMilliseconds;
-            request.Headers[HttpRequestHeader.Authorization] = "Bearer " + Authenticate();
-            request.ContentType = "application/json; charset=utf-8";
-            request.ContentLength = payload.Length;
-            using (Stream stream = request.GetRequestStream())
-            {
-                stream.Write(payload, 0, payload.Length);
-            }
-            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-            {
-                using (Stream stream = response.GetResponseStream())
-                {
-                    if (stream != null) stream.CopyTo(Stream.Null);
-                }
-            }
+            object value;
+            return source != null && source.TryGetValue(key, out value) ? value as object[] : null;
         }
 
-        private void PutJson(string url, IDictionary<string, object> body)
+        private static string ObjectValue(IDictionary<string, object> source, string key)
         {
-            byte[] payload = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(body));
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-            request.Method = "PUT";
-            request.Timeout = TimeoutMilliseconds;
-            request.ReadWriteTimeout = TimeoutMilliseconds;
-            request.Headers[HttpRequestHeader.Authorization] = "Bearer " + Authenticate();
-            request.ContentType = "application/json; charset=utf-8";
-            request.ContentLength = payload.Length;
-            using (Stream stream = request.GetRequestStream())
-            {
-                stream.Write(payload, 0, payload.Length);
-            }
-            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-            using (Stream stream = response.GetResponseStream())
-            {
-                if (stream != null) stream.CopyTo(Stream.Null);
-            }
+            object value;
+            return source != null && source.TryGetValue(key, out value) && value != null
+                ? Convert.ToString(value, CultureInfo.InvariantCulture).Trim()
+                : String.Empty;
         }
 
-        private string Authenticate()
+        private static int ParseVersion(string value)
         {
-            return GoogleOAuth.GetAccessToken(credentialsPath, tokenPath);
+            int version;
+            return Int32.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out version) && version >= 0
+                ? version
+                : 0;
         }
 
         private static string BuildValuesUrl(string sheetName, string range)
@@ -747,82 +424,12 @@ namespace SampleManager
                 + "?majorDimension=ROWS";
         }
 
-        private static string BuildAppendUrl()
-        {
-            string quotedRange = "'" + RequestSheet + "'!A1:L";
-            return "https://sheets.googleapis.com/v4/spreadsheets/"
-                + Uri.EscapeDataString(SpreadsheetId)
-                + "/values/" + Uri.EscapeDataString(quotedRange)
-                + ":append?valueInputOption=RAW&insertDataOption=INSERT_ROWS";
-        }
-
-        private static string BuildSampleWriteUrl(int firstPhysicalRow, int rowCount)
-        {
-            int lastPhysicalRow = firstPhysicalRow + rowCount - 1;
-            string quotedRange = "'" + SampleSheet + "'!A" + firstPhysicalRow + ":L" + lastPhysicalRow;
-            return "https://sheets.googleapis.com/v4/spreadsheets/"
-                + Uri.EscapeDataString(SpreadsheetId)
-                + "/values/" + Uri.EscapeDataString(quotedRange)
-                + "?valueInputOption=RAW";
-        }
-
-        private static string BuildSampleUpdateUrl(int physicalRow, int columnIndex)
-        {
-            string column = ToColumnName(columnIndex);
-            string range = "'" + SampleSheet + "'!" + column + physicalRow;
-            return "https://sheets.googleapis.com/v4/spreadsheets/"
-                + Uri.EscapeDataString(SpreadsheetId)
-                + "/values/" + Uri.EscapeDataString(range)
-                + "?valueInputOption=RAW";
-        }
-
-        private static string ToColumnName(int zeroBasedIndex)
-        {
-            int value = zeroBasedIndex + 1;
-            String result = String.Empty;
-            while (value > 0)
-            {
-                int remainder = (value - 1) % 26;
-                result = (char)('A' + remainder) + result;
-                value = (value - 1) / 26;
-            }
-            return result;
-        }
-
-        private static string BuildRequestUpdateUrl(int physicalRow)
-        {
-            string range = "'" + RequestSheet + "'!A" + physicalRow + ":L" + physicalRow;
-            return "https://sheets.googleapis.com/v4/spreadsheets/"
-                + Uri.EscapeDataString(SpreadsheetId)
-                + "/values/" + Uri.EscapeDataString(range)
-                + "?valueInputOption=RAW";
-        }
-
-        private static string BuildSampleHeaderUpdateUrl()
-        {
-            string range = "'" + SampleSheet + "'!L1";
-            return "https://sheets.googleapis.com/v4/spreadsheets/"
-                + Uri.EscapeDataString(SpreadsheetId)
-                + "/values/" + Uri.EscapeDataString(range)
-                + "?valueInputOption=RAW";
-        }
-
-        private static string BuildBatchUpdateUrl()
-        {
-            return "https://sheets.googleapis.com/v4/spreadsheets/"
-                + Uri.EscapeDataString(SpreadsheetId)
-                + ":batchUpdate";
-        }
-
         private static IList<IList<string>> ParseRows(IDictionary<string, object> result)
         {
             IList<IList<string>> rows = new List<IList<string>>();
             object raw;
             object[] values;
-            if (!result.TryGetValue("values", out raw) || (values = raw as object[]) == null)
-            {
-                return rows;
-            }
+            if (!result.TryGetValue("values", out raw) || (values = raw as object[]) == null) return rows;
             for (int rowIndex = 0; rowIndex < values.Length; rowIndex++)
             {
                 object[] cells = values[rowIndex] as object[];
