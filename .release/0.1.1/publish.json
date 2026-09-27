@@ -4,5 +4,6 @@
   "sha256": "ecf10270a3a3d9197797e28af3c8f479fba434e1e7f3213a9cf023f346017260",
   "downloadUrl": "https://github.com/kingstorm1312-ai/Sample-Manager/releases/download/v0.1.1/Sample.Manager-0.1.1-final.zip",
   "sourceUrlB64": "aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL2tpbmdzdG9ybTEzMTItYWkvU2FtcGxlLU1hbmFnZXIvbWFpbi8ucmVsZWFzZS8wLjEuMS9TYW1wbGUuTWFuYWdlci0wLjEuMS1maW5hbC56aXA=",
-  "notes": "Sample Manager 0.1.1"
+  "notes": "Sample Manager 0.1.1",
+  "retry": 3
 }
