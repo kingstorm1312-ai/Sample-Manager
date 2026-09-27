@@ -1,0 +1,9 @@
+{
+  "version": "0.1.2",
+  "assetName": "Sample.Manager-0.1.2-final.zip",
+  "sha256": "09b7f7ad5b889daca2db674a55675237ee1bc170a9f827781c066e82117acea8",
+  "downloadUrl": "https://github.com/kingstorm1312-ai/Sample-Manager/releases/download/v0.1.2/Sample.Manager-0.1.2-final.zip",
+  "sourceUrlB64": "aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL2tpbmdzdG9ybTEzMTItYWkvU2FtcGxlLU1hbmFnZXIvbWFpbi8ucmVsZWFzZS8wLjEuMi9TYW1wbGUuTWFuYWdlci0wLjEuMi1maW5hbC56aXA=",
+  "notes": "Sample Manager 0.1.2",
+  "retry": 3
+}
