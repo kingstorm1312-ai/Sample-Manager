@@ -28,6 +28,28 @@
 - Run the real UI journey: open app, open `Yêu cầu mẫu`, enter data, normalize, save, read back and display.
 - Delete only the created test record after readback is observed.
 
+## RELEASE — LOCAL FIRST
+
+Authority:
+
+- Khi Boss yêu cầu `release`, `publish`, `tạo bản update` hoặc tương đương, Luna mặc định chạy `tools\release.ps1` trên workspace local.
+- Workspace local hiện tại là release authority.
+- Không tạo version/release nếu Boss chưa yêu cầu.
+
+Normal path:
+
+`feature PASS → tools\release.ps1 → GitHub Release → clone E2E auto-update`
+
+Chuẩn bị công cụ một lần:
+
+- `gh auth status` phải PASS trước release.
+- GitHub CLI dùng trực tiếp để tạo GitHub Release.
+- Git dùng trực tiếp để commit/push source lên `main`.
+
+GitHub connector, base64, blob/tree, `.release` staging và GitHub Actions không phải normal release path.
+
+Workflow `.github/workflows/publish-release.yml` giữ nguyên như legacy fallback; chỉ đổi đường khi local release xuất hiện blocker thật và đã có evidence, necessity, return path rõ ràng.
+
 ## RELEASE / AUTO UPDATE — PROVEN FLOW
 
 Authority:
