@@ -86,13 +86,12 @@ namespace SampleManager
             IDictionary<string, object> result = GetJson(BuildValuesUrl(QaSheet, "A:D"));
             IList<IList<string>> rows = ParseRows(result);
             IList<QaOption> options = new List<QaOption>();
+            HashSet<string> seenIds = new HashSet<string>(StringComparer.Ordinal);
             for (int index = 1; index < rows.Count; index++)
             {
                 string id = Cell(rows[index], 0);
                 string displayName = Cell(rows[index], 1);
-                string active = Cell(rows[index], 2);
-                if (!String.IsNullOrWhiteSpace(id)
-                    && String.Equals(active, "TRUE", StringComparison.OrdinalIgnoreCase))
+                if (!String.IsNullOrWhiteSpace(id) && seenIds.Add(id))
                 {
                     options.Add(new QaOption { Id = id, DisplayName = displayName });
                 }

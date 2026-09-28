@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SampleManager
@@ -9,6 +10,7 @@ namespace SampleManager
     {
         private readonly Button requestButton;
         private readonly Button sampleManagementButton;
+        private readonly Button refreshDataButton;
         private readonly Button logoutButton;
         private readonly Button checkUpdatesButton;
         private readonly Label errorLabel;
@@ -17,6 +19,7 @@ namespace SampleManager
         private readonly SampleManagerCache cache;
         private readonly AuthenticationService authenticationService;
         private bool loadStarted;
+        private bool refreshInProgress;
 
         public MainForm(
             GoogleSheetsSampleRepository repository,
@@ -43,6 +46,15 @@ namespace SampleManager
             title.Font = AppTheme.TitleFont;
             title.ForeColor = AppTheme.Text;
             shell.Controls.Add(title);
+
+            refreshDataButton = new Button();
+            refreshDataButton.Text = "\u21BB Làm mới dữ liệu";
+            refreshDataButton.Location = new Point(300, 32);
+            refreshDataButton.Size = new Size(160, 38);
+            refreshDataButton.Enabled = false;
+            AppTheme.StyleSecondaryButton(refreshDataButton);
+            refreshDataButton.Click += RefreshLiveData;
+            shell.Controls.Add(refreshDataButton);
 
             checkUpdatesButton = new Button();
             checkUpdatesButton.Text = "Kiểm tra cập nhật";
@@ -123,12 +135,14 @@ namespace SampleManager
                     {
                         if (loadException == null)
                         {
+                            refreshDataButton.Enabled = true;
                             requestButton.Enabled = true;
                             sampleManagementButton.Enabled = true;
                             AppTheme.SetSuccessStatus(errorLabel, "Sẵn sàng");
                             return;
                         }
 
+                        refreshDataButton.Enabled = false;
                         AppTheme.SetErrorStatus(errorLabel, "Không thể tải dữ liệu");
                         MessageBox.Show(
                             this,
@@ -142,6 +156,47 @@ namespace SampleManager
                 {
                 }
             });
+        }
+
+        private async void RefreshLiveData(object sender, EventArgs e)
+        {
+            if (refreshInProgress || !refreshDataButton.Enabled)
+            {
+                return;
+            }
+
+            refreshInProgress = true;
+            refreshDataButton.Enabled = false;
+            AppTheme.SetMutedStatus(errorLabel, "Đang làm mới dữ liệu");
+            try
+            {
+                await Task.Run(delegate { cache.LoadLive(repository); });
+                if (!IsDisposed)
+                {
+                    AppTheme.SetSuccessStatus(errorLabel, "Đã làm mới dữ liệu");
+                }
+            }
+            catch (Exception exception)
+            {
+                if (!IsDisposed)
+                {
+                    AppTheme.SetErrorStatus(errorLabel, "Không làm mới được dữ liệu");
+                    MessageBox.Show(
+                        this,
+                        exception.Message,
+                        "Không thể làm mới dữ liệu",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
+            }
+            finally
+            {
+                refreshInProgress = false;
+                if (!IsDisposed)
+                {
+                    refreshDataButton.Enabled = cache.Snapshot().IsLoaded;
+                }
+            }
         }
 
         private void CheckForUpdates(object sender, EventArgs e)
