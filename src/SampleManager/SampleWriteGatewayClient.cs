@@ -17,15 +17,38 @@ namespace SampleManager
         public IDictionary<string, object> Result { get; set; }
     }
 
+    internal sealed class SampleGatewayResponse
+    {
+        public int StatusCode { get; set; }
+        public string Body { get; set; }
+    }
+
     internal sealed class SampleGatewayException : InvalidOperationException
     {
         public SampleGatewayException(string code, string message)
-            : base(message)
+            : this(code, message, null, null, String.Empty, null)
+        {
+        }
+
+        public SampleGatewayException(
+            string code,
+            string message,
+            string endpoint,
+            int? httpStatusCode,
+            string responseBody,
+            Exception innerException)
+            : base(message, innerException)
         {
             Code = code ?? String.Empty;
+            Endpoint = endpoint ?? String.Empty;
+            HttpStatusCode = httpStatusCode;
+            ResponseBody = responseBody ?? String.Empty;
         }
 
         public string Code { get; private set; }
+        public string Endpoint { get; private set; }
+        public int? HttpStatusCode { get; private set; }
+        public string ResponseBody { get; private set; }
         public bool IsConflict { get { return String.Equals(Code, "CONFLICT", StringComparison.Ordinal); } }
         public bool IsClaimed { get { return String.Equals(Code, "CLAIMED", StringComparison.Ordinal); } }
     }
@@ -53,8 +76,22 @@ namespace SampleManager
             body["gatewaySecret"] = settings.Secret;
             body["payload"] = payload;
 
-            string responseJson = await PostAsync(serializer.Serialize(body));
-            IDictionary<string, object> response = DeserializeObject(responseJson);
+            SampleGatewayResponse httpResponse = await PostAsync(serializer.Serialize(body));
+            IDictionary<string, object> response;
+            try
+            {
+                response = DeserializeObject(httpResponse.Body);
+            }
+            catch (Exception exception)
+            {
+                throw new SampleGatewayException(
+                    "CLIENT_PARSE",
+                    "Write gateway response is not valid JSON.",
+                    DiagnosticEndpoint(settings.Endpoint),
+                    httpResponse.StatusCode,
+                    httpResponse.Body,
+                    exception);
+            }
             object okValue;
             bool ok = response.TryGetValue("ok", out okValue) && Convert.ToBoolean(okValue);
             if (!ok)
@@ -63,7 +100,11 @@ namespace SampleManager
                 string message = GetString(response, "message");
                 throw new SampleGatewayException(
                     code,
-                    String.IsNullOrWhiteSpace(message) ? "Write gateway từ chối mutation." : message);
+                    String.IsNullOrWhiteSpace(message) ? "Write gateway từ chối mutation." : message,
+                    DiagnosticEndpoint(settings.Endpoint),
+                    httpResponse.StatusCode,
+                    httpResponse.Body,
+                    null);
             }
 
             return new SampleGatewayResult
@@ -74,7 +115,7 @@ namespace SampleManager
             };
         }
 
-        private async Task<string> PostAsync(string json)
+        private async Task<SampleGatewayResponse> PostAsync(string json)
         {
             ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
             byte[] payload = Encoding.UTF8.GetBytes(json);
@@ -86,33 +127,86 @@ namespace SampleManager
             request.Accept = "application/json";
             request.ContentLength = payload.Length;
 
-            using (Stream stream = await request.GetRequestStreamAsync())
-            {
-                await stream.WriteAsync(payload, 0, payload.Length);
-            }
-
-            HttpWebResponse response = null;
             try
             {
-                response = (HttpWebResponse)await request.GetResponseAsync();
+                using (Stream stream = await request.GetRequestStreamAsync())
+                {
+                    await stream.WriteAsync(payload, 0, payload.Length);
+                }
+
+                using (HttpWebResponse response = (HttpWebResponse)await request.GetResponseAsync())
+                {
+                    return ReadResponse(response);
+                }
             }
             catch (WebException exception)
             {
-                response = exception.Response as HttpWebResponse;
-                if (response == null) throw;
-            }
+                HttpWebResponse response = exception.Response as HttpWebResponse;
+                if (response == null)
+                {
+                    throw new SampleGatewayException(
+                        "CLIENT_TRANSPORT",
+                        "Write gateway HTTP request failed.",
+                        DiagnosticEndpoint(settings.Endpoint),
+                        null,
+                        String.Empty,
+                        exception);
+                }
 
-            using (response)
+                using (response)
+                {
+                    return ReadResponse(response);
+                }
+            }
+            catch (SampleGatewayException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                throw new SampleGatewayException(
+                    "CLIENT_TRANSPORT",
+                    "Write gateway HTTP request failed.",
+                    DiagnosticEndpoint(settings.Endpoint),
+                    null,
+                    String.Empty,
+                    exception);
+            }
+        }
+
+        private SampleGatewayResponse ReadResponse(HttpWebResponse response)
+        {
             using (Stream stream = response.GetResponseStream())
             using (StreamReader reader = new StreamReader(stream ?? Stream.Null, Encoding.UTF8))
             {
-                string responseJson = await Task.Run(() => reader.ReadToEnd());
+                string responseJson = reader.ReadToEnd();
                 if (String.IsNullOrWhiteSpace(responseJson))
                 {
-                    throw new InvalidOperationException("Write gateway trả về response rỗng.");
+                    throw new SampleGatewayException(
+                        "CLIENT_HTTP",
+                        "Write gateway returned an empty response.",
+                        DiagnosticEndpoint(settings.Endpoint),
+                        (int)response.StatusCode,
+                        responseJson,
+                        null);
                 }
-                return responseJson;
+
+                return new SampleGatewayResponse
+                {
+                    StatusCode = (int)response.StatusCode,
+                    Body = responseJson
+                };
             }
+        }
+
+        private static string DiagnosticEndpoint(string endpoint)
+        {
+            Uri uri;
+            if (Uri.TryCreate(endpoint, UriKind.Absolute, out uri))
+            {
+                return uri.GetLeftPart(UriPartial.Path);
+            }
+            return String.Empty;
         }
 
         private IDictionary<string, object> DeserializeObject(string json)

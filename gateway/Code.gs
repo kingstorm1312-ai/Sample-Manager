@@ -147,32 +147,30 @@ function createRequest_(mutation, timing) {
       requestRecord.RowVersion = 1;
       appendRecord_(requestSheet, requestRows.headers, requestRecord, timing);
       createdRequest = true;
-      requestRecord = findTableRow_(table_(requestSheet, timing), 'YeuCau_ID', requestId).record;
+      requestRows.records.push(requestRecord);
     }
 
     var version = normalizeVersion_(requestRecord.PhienBan);
     var contract = normalizeContract_(requestRecord.SoHopDong);
     var existingSamples = samplesForRequest_(sampleRows, requestId);
+    var startNumber = sampleStartNumber_(sampleRows, requestRows, existingSamples, contract, version);
     var toAppend = [];
-    for (var index = 1; index <= count; index++) {
-      var expectedSampleId = 'RS-' + contract + '-' + version + '-' + index;
-      var sameNumber = findSampleNumber_(existingSamples, index);
+    for (var offset = 0; offset < count; offset++) {
+      var sampleNumber = startNumber + offset;
+      var expectedSampleId = 'RS-' + contract + '-' + version + '-' + sampleNumber;
+      var sameNumber = findSampleNumber_(existingSamples, sampleNumber);
       if (sameNumber) {
         if (sameNumber.Sample_ID !== expectedSampleId) {
           throw gatewayError_('BUSINESS_RULE', 'STT mẫu đã tồn tại với Sample_ID khác.');
         }
         continue;
       }
-      var duplicate = findTableRow_(sampleRows, 'Sample_ID', expectedSampleId);
-      if (duplicate && duplicate.record.YeuCau_ID !== requestId) {
-        throw gatewayError_('DUPLICATE_ID', 'Sample_ID đã tồn tại ở yêu cầu khác.');
-      }
       var sample = {
         Mau_ID: 'MAU-' + Utilities.getUuid().replace(/-/g, '').toUpperCase(),
         YeuCau_ID: requestId,
         Sample_ID: expectedSampleId,
         PhienBan: version,
-        STTMau: String(index),
+        STTMau: String(sampleNumber),
         NgayDuyet: '',
         NgayHetHan: '',
         NguoiDuyet: '',
@@ -188,9 +186,10 @@ function createRequest_(mutation, timing) {
       createdSampleIds.push(sample.Mau_ID);
     }
     if (toAppend.length > 0) appendRecords_(sampleSheet, sampleRows.headers, toAppend, timing);
+    for (var appendedIndex = 0; appendedIndex < toAppend.length; appendedIndex++) {
+      sampleRows.records.push(toAppend[appendedIndex]);
+    }
 
-    requestRecord = findTableRow_(table_(requestSheet, timing), 'YeuCau_ID', requestId).record;
-    sampleRows = table_(sampleSheet, timing);
     var finalSamples = samplesForRequest_(sampleRows, requestId);
     if (finalSamples.length !== count) {
       throw gatewayError_('INCOMPLETE_COMMIT', 'Không đủ mẫu sau commit.');
@@ -382,6 +381,36 @@ function findSampleNumber_(samples, number) {
     if (String(samples[index].STTMau) === expected) return samples[index];
   }
   return null;
+}
+
+function sampleStartNumber_(sampleTable, requestTable, requestSamples, contract, version) {
+  var existingStart = null;
+  for (var index = 0; index < requestSamples.length; index++) {
+    var existingNumber = validSampleNumber_(requestSamples[index].STTMau);
+    if (existingNumber !== null && (existingStart === null || existingNumber < existingStart)) {
+      existingStart = existingNumber;
+    }
+  }
+  if (existingStart !== null) return existingStart;
+
+  var maximum = 0;
+  for (var sampleIndex = 0; sampleIndex < sampleTable.records.length; sampleIndex++) {
+    var sample = sampleTable.records[sampleIndex];
+    if (normalizeVersion_(sample.PhienBan) !== version) continue;
+    var request = findTableRow_(requestTable, 'YeuCau_ID', sample.YeuCau_ID);
+    if (!request || normalizeContract_(request.record.SoHopDong) !== contract) continue;
+    var sampleNumber = validSampleNumber_(sample.STTMau);
+    if (sampleNumber !== null && sampleNumber > maximum) maximum = sampleNumber;
+  }
+  return maximum + 1;
+}
+
+function validSampleNumber_(value) {
+  var text = String(value == null ? '' : value).trim();
+  if (!/^\d+$/.test(text)) return null;
+  var number = Number(text);
+  if (!isFinite(number) || number < 1 || Math.floor(number) !== number) return null;
+  return number;
 }
 
 function table_(sheet, timing) {

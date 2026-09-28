@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace SampleManager
@@ -77,11 +78,47 @@ namespace SampleManager
             catch (Exception exception)
             {
                 throw new SampleRequestCreationException(
-                    "Không thể hoàn tất yêu cầu qua write gateway.",
+                    "Không thể hoàn tất yêu cầu qua write gateway."
+                        + Environment.NewLine
+                        + BuildDiagnostic(exception, operationId),
                     exception,
                     false,
                     request);
             }
+        }
+
+        private static string BuildDiagnostic(Exception exception, string operationId)
+        {
+            StringBuilder builder = new StringBuilder();
+            builder.Append("operationId=").Append(operationId ?? String.Empty)
+                .Append("; operationType=CREATE_REQUEST");
+
+            int depth = 0;
+            for (Exception current = exception; current != null && depth < 8; current = current.InnerException)
+            {
+                builder.Append(Environment.NewLine)
+                    .Append("exception[").Append(depth.ToString(CultureInfo.InvariantCulture)).Append("]=")
+                    .Append(current.GetType().FullName)
+                    .Append(": ").Append(current.Message);
+
+                SampleGatewayException gatewayException = current as SampleGatewayException;
+                if (gatewayException != null)
+                {
+                    builder.Append("; code=").Append(gatewayException.Code)
+                        .Append("; httpStatus=")
+                        .Append(gatewayException.HttpStatusCode.HasValue
+                            ? gatewayException.HttpStatusCode.Value.ToString(CultureInfo.InvariantCulture)
+                            : "N/A")
+                        .Append("; endpoint=")
+                        .Append(String.IsNullOrWhiteSpace(gatewayException.Endpoint) ? "N/A" : gatewayException.Endpoint)
+                        .Append("; responseBody=")
+                        .Append(String.IsNullOrWhiteSpace(gatewayException.ResponseBody) ? "N/A" : gatewayException.ResponseBody);
+                }
+
+                depth++;
+            }
+
+            return builder.ToString();
         }
 
         private static int ParseSampleCount(string value)
